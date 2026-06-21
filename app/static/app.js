@@ -1,0 +1,548 @@
+/* Networking AI — single-page dashboard (vanilla JS, no build step). */
+
+const API = "/api";
+const RELATIONSHIPS = ["family","friend","colleague","client","partner","mentor","investor","acquaintance","other"];
+const FREQUENCIES = ["weekly","biweekly","monthly","quarterly","biannual","yearly"];
+const CHANNELS = ["call","message","email","meeting","social","event","other"];
+
+const state = { view: "dashboard", aiEnabled: false };
+
+/* ── HTTP ──────────────────────────────────────────────────────────────── */
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+/* ── Helpers ───────────────────────────────────────────────────────────── */
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, cls, html) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+};
+const esc = (s) => (s == null ? "" : String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])));
+const initials = (c) => ((c.first_name?.[0] || "") + (c.last_name?.[0] || "")).toUpperCase() || "?";
+const titleCase = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+function toast(msg, isError = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "toast" + (isError ? " error" : "");
+  setTimeout(() => (t.className = "toast hidden"), 3200);
+}
+
+function warmthBar(c) {
+  const pct = Math.round(c.warmth_score);
+  return `<div class="warmth">
+    <span class="dot bg-${c.warmth_status}"></span>
+    <div class="warmth-bar"><div class="warmth-fill bg-${c.warmth_status}" style="width:${pct}%"></div></div>
+    <small class="status-${c.warmth_status}">${pct}</small>
+  </div>`;
+}
+
+function daysLabel(n) {
+  if (n === 0) return "today";
+  if (n === 1) return "in 1 day";
+  return `in ${n} days`;
+}
+
+/* ── Modal ─────────────────────────────────────────────────────────────── */
+function openModal(html) {
+  $("#modal").innerHTML = html;
+  $("#modal-host").classList.remove("hidden");
+}
+function closeModal() { $("#modal-host").classList.add("hidden"); }
+$("#modal-host").addEventListener("click", (e) => {
+  if (e.target.classList.contains("modal-backdrop")) closeModal();
+});
+
+/* ── Router ────────────────────────────────────────────────────────────── */
+function setView(view) {
+  state.view = view;
+  document.querySelectorAll(".nav-item").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === view));
+  if (view === "dashboard") renderDashboard();
+  else if (view === "contacts") renderContacts();
+}
+document.querySelectorAll(".nav-item").forEach((b) =>
+  b.addEventListener("click", () => setView(b.dataset.view)));
+$("#add-contact-btn").addEventListener("click", () => openContactForm());
+
+/* ── Dashboard ─────────────────────────────────────────────────────────── */
+async function renderDashboard() {
+  const main = $("#main");
+  main.innerHTML = `<div class="view-head"><h2>Dashboard</h2></div><div class="empty"><span class="spinner"></span> Loading…</div>`;
+  let d;
+  try { d = await api("/dashboard"); } catch (e) { return showError(e); }
+
+  const s = d.stats;
+  const stat = (label, value) => `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+
+  const suggestions = d.suggestions.length
+    ? d.suggestions.map((sg) => `
+      <div class="suggestion" data-id="${sg.contact.id}">
+        <div class="avatar">${initials(sg.contact)}</div>
+        <div class="meta" style="flex:1">
+          <div class="name">${esc(sg.contact.full_name)}</div>
+          <div class="reason">${esc(sg.reason)}</div>
+        </div>
+        ${warmthBar(sg.contact)}
+        <button class="btn small primary" data-rec="${sg.contact.id}">Suggest</button>
+      </div>`).join("")
+    : `<div class="empty">Nobody is overdue. You're on top of your network. ✦</div>`;
+
+  const upcoming = d.upcoming.length
+    ? d.upcoming.map((u) => `
+      <div class="suggestion" data-id="${u.contact.id}">
+        <div class="avatar">${initials(u.contact)}</div>
+        <div class="meta" style="flex:1">
+          <div class="name">${esc(u.contact.full_name)}</div>
+          <div class="reason">${esc(u.label)} · ${daysLabel(u.days_away)}</div>
+        </div>
+      </div>`).join("")
+    : `<div class="empty muted">No upcoming dates in the next two weeks.</div>`;
+
+  const events = d.pending_events.length
+    ? d.pending_events.map((ev) => `
+      <div class="suggestion">
+        <div class="meta" style="flex:1">
+          <div class="name">${esc(ev.title)}</div>
+          <div class="reason">${esc(ev.event_type)} · ${esc(ev.source)}</div>
+        </div>
+      </div>`).join("")
+    : `<div class="empty muted">No new life events detected.</div>`;
+
+  main.innerHTML = `
+    <div class="view-head">
+      <h2>Dashboard</h2>
+      <button class="btn ghost" id="refresh-warmth">↻ Recompute warmth</button>
+    </div>
+    <div class="grid stats-grid">
+      ${stat("Contacts", s.total_contacts)}
+      ${stat("Due now", s.due_now)}
+      ${stat("Avg warmth", s.average_warmth)}
+      ${stat("Pending events", s.pending_life_events)}
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <div class="flex between mb"><h3 class="section-title">Reach out today</h3></div>
+        ${suggestions}
+      </div>
+      <div>
+        <div class="card mb">
+          <h3 class="section-title">Upcoming dates</h3>
+          ${upcoming}
+        </div>
+        <div class="card">
+          <h3 class="section-title">New life events</h3>
+          ${events}
+        </div>
+      </div>
+    </div>`;
+
+  main.querySelectorAll(".suggestion[data-id]").forEach((row) =>
+    row.addEventListener("click", (e) => {
+      if (e.target.dataset.rec) return;
+      openContactDetail(Number(row.dataset.id));
+    }));
+  main.querySelectorAll("[data-rec]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); showRecommendation(Number(b.dataset.rec)); }));
+  $("#refresh-warmth").addEventListener("click", async () => {
+    try { await api("/maintenance/refresh-warmth", { method: "POST" }); toast("Warmth recomputed"); renderDashboard(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ── Contacts list ─────────────────────────────────────────────────────── */
+async function renderContacts() {
+  const main = $("#main");
+  main.innerHTML = `
+    <div class="view-head"><h2>Contacts</h2>
+      <button class="btn primary" id="new-c">+ New contact</button></div>
+    <div class="toolbar">
+      <input class="search" id="search" placeholder="Search name or company…" />
+      <select id="filter-rel"><option value="">All relationships</option>
+        ${RELATIONSHIPS.map((r) => `<option value="${r}">${titleCase(r)}</option>`).join("")}</select>
+      <select id="sort"><option value="warmth">Coldest first</option>
+        <option value="due">Most overdue</option>
+        <option value="recent">Recently contacted</option>
+        <option value="name">Name</option></select>
+    </div>
+    <div id="contact-list" class="card"><div class="empty"><span class="spinner"></span></div></div>`;
+
+  $("#new-c").addEventListener("click", () => openContactForm());
+  const reload = () => loadContactList();
+  $("#search").addEventListener("input", debounce(reload, 250));
+  $("#filter-rel").addEventListener("change", reload);
+  $("#sort").addEventListener("change", reload);
+  loadContactList();
+}
+
+async function loadContactList() {
+  const params = new URLSearchParams();
+  const q = $("#search")?.value.trim();
+  const rel = $("#filter-rel")?.value;
+  const sort = $("#sort")?.value || "warmth";
+  if (q) params.set("search", q);
+  if (rel) params.set("relationship", rel);
+  params.set("sort", sort);
+
+  const list = $("#contact-list");
+  try {
+    const contacts = await api("/contacts?" + params.toString());
+    if (!contacts.length) { list.innerHTML = `<div class="empty">No contacts yet. Add your first one.</div>`; return; }
+    list.innerHTML = contacts.map((c) => `
+      <div class="row" data-id="${c.id}">
+        <div class="avatar">${initials(c)}</div>
+        <div class="meta">
+          <div class="name">${esc(c.full_name)}</div>
+          <div class="sub">${esc([titleCase(c.relationship_type), c.position, c.company].filter(Boolean).join(" · "))}</div>
+        </div>
+        ${warmthBar(c)}
+      </div>`).join("");
+    list.querySelectorAll(".row").forEach((r) =>
+      r.addEventListener("click", () => openContactDetail(Number(r.dataset.id))));
+  } catch (e) { showError(e); }
+}
+
+/* ── Contact detail ────────────────────────────────────────────────────── */
+async function openContactDetail(id, tab = "overview") {
+  const main = $("#main");
+  main.innerHTML = `<div class="empty"><span class="spinner"></span> Loading…</div>`;
+  let c;
+  try { c = await api(`/contacts/${id}`); } catch (e) { return showError(e); }
+
+  const tabs = ["overview", "interactions", "events", "social"];
+  const tabBtns = tabs.map((t) =>
+    `<button class="tab ${t === tab ? "active" : ""}" data-tab="${t}">${titleCase(t)}</button>`).join("");
+
+  main.innerHTML = `
+    <button class="btn ghost mb" id="back">← Back</button>
+    <div class="detail-head">
+      <div class="avatar">${initials(c)}</div>
+      <div style="flex:1">
+        <div class="flex between">
+          <div>
+            <h2>${esc(c.full_name)}</h2>
+            <div class="role">${esc([c.position, c.company].filter(Boolean).join(" at "))}</div>
+          </div>
+          <div class="flex">
+            <button class="btn" id="edit">Edit</button>
+            <button class="btn danger" id="del">Delete</button>
+          </div>
+        </div>
+        <div class="flex mt" style="gap:18px">
+          <div style="width:200px">${warmthBar(c)}</div>
+          <span class="pill">${titleCase(c.relationship_type)}</span>
+          <span class="pill">cadence: ${c.contact_frequency}</span>
+          <span class="muted">${c.is_due ? "⚠ due now" : `last contact ${c.days_since_contact}d ago`}</span>
+        </div>
+        <div class="tags mt">${c.tags.map((t) => `<span class="pill accent">${esc(t)}</span>`).join("")}</div>
+      </div>
+    </div>
+    <div class="flex mb" style="gap:8px">
+      <button class="btn primary small" id="dossier-btn">✦ ${c.ai_dossier ? "Refresh" : "Generate"} dossier</button>
+      <button class="btn small" id="rec-btn">✦ Outreach suggestion</button>
+      <button class="btn small" id="log-btn">+ Log interaction</button>
+      <button class="btn small" id="import-btn">⬇ Import from link</button>
+    </div>
+    <div id="ai-area"></div>
+    <div class="tabs">${tabBtns}</div>
+    <div id="tab-body"></div>`;
+
+  $("#back").addEventListener("click", () => setView(state.lastList || "contacts"));
+  $("#edit").addEventListener("click", () => openContactForm(c));
+  $("#del").addEventListener("click", () => confirmDelete(c));
+  $("#dossier-btn").addEventListener("click", () => generateDossier(c.id));
+  $("#rec-btn").addEventListener("click", () => showRecommendation(c.id));
+  $("#log-btn").addEventListener("click", () => openInteractionForm(c.id));
+  $("#import-btn").addEventListener("click", () => openImportForm(c.id));
+  main.querySelectorAll(".tab").forEach((b) =>
+    b.addEventListener("click", () => { renderTab(c, b.dataset.tab); main.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b)); }));
+
+  if (c.ai_dossier) $("#ai-area").innerHTML = dossierHtml(c.ai_dossier);
+  renderTab(c, tab);
+}
+
+function dossierHtml(text) {
+  return `<div class="card mb"><h3 class="section-title">AI dossier</h3><div class="ai-box">${esc(text)}</div></div>`;
+}
+
+function renderTab(c, tab) {
+  const body = $("#tab-body");
+  if (tab === "overview") {
+    const f = (k, v) => v ? `<div class="field-row"><span class="k">${k}</span><span>${v}</span></div>` : "";
+    const link = (k, v) => v ? `<div class="field-row"><span class="k">${k}</span><a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a></div>` : "";
+    body.innerHTML = `<div class="card">
+      ${f("Email", esc(c.email))}
+      ${f("Phone", esc(c.phone))}
+      ${f("WhatsApp", esc(c.whatsapp))}
+      ${f("Telegram", esc(c.telegram))}
+      ${f("Location", esc(c.location))}
+      ${f("Birthday", c.birth_date || "")}
+      ${link("LinkedIn", c.linkedin_url)}
+      ${link("Instagram", c.instagram_url)}
+      ${link("Facebook", c.facebook_url)}
+      ${link("Twitter/X", c.twitter_url)}
+      ${link("GitHub", c.github_url)}
+      ${link("Website", c.website_url)}
+      ${c.notes ? `<div class="field-row"><span class="k">Notes</span><span style="max-width:60%;text-align:right">${esc(c.notes)}</span></div>` : ""}
+      ${c.key_dates.length ? `<h3 class="section-title mt">Key dates</h3>${c.key_dates.map((k) => `<div class="field-row"><span class="k">${esc(k.label)}</span><span>${k.date}</span></div>`).join("")}` : ""}
+    </div>`;
+  } else if (tab === "interactions") {
+    body.innerHTML = c.interactions.length
+      ? `<div class="card">${c.interactions.map((i) => `
+          <div class="timeline-item">
+            <div class="flex between">
+              <strong>${titleCase(i.channel)} · ${titleCase(i.direction)}</strong>
+              <span class="muted">${new Date(i.occurred_at).toLocaleDateString()}</span>
+            </div>
+            <div>${esc(i.summary || "—")}</div>
+            <small class="muted">sentiment ${i.sentiment >= 0 ? "+" : ""}${i.sentiment}</small>
+          </div>`).join("")}</div>`
+      : `<div class="empty">No interactions logged. Use “Log interaction”.</div>`;
+  } else if (tab === "events") {
+    body.innerHTML = c.life_events.length
+      ? `<div class="card">${c.life_events.map((ev) => `
+          <div class="timeline-item">
+            <div class="flex between">
+              <strong>${esc(ev.title)}</strong>
+              <span class="pill">${esc(ev.status)}</span>
+            </div>
+            <div class="muted">${esc(ev.event_type)} · ${esc(ev.source)}${ev.event_date ? " · " + ev.event_date : ""}</div>
+            ${ev.description ? `<div>${esc(ev.description)}</div>` : ""}
+            ${ev.suggested_message ? `<div class="ai-box mt">${esc(ev.suggested_message)}</div>` : ""}
+            <div class="flex mt" style="gap:6px">
+              <button class="btn small" data-evmsg="${ev.id}">✦ Draft message</button>
+              ${ev.status !== "acted" ? `<button class="btn small" data-evdone="${ev.id}">Mark acted</button>` : ""}
+            </div>
+          </div>`).join("")}</div>`
+      : `<div class="empty">No life events yet. Import a social link to detect them.</div>`;
+    body.querySelectorAll("[data-evmsg]").forEach((b) =>
+      b.addEventListener("click", () => draftEventMessage(c.id, Number(b.dataset.evmsg))));
+    body.querySelectorAll("[data-evdone]").forEach((b) =>
+      b.addEventListener("click", () => markEvent(c.id, Number(b.dataset.evdone))));
+  } else if (tab === "social") {
+    body.innerHTML = c.social_snapshots.length
+      ? `<div class="card">${c.social_snapshots.map((s) => `
+          <div class="timeline-item">
+            <div class="flex between"><strong>${titleCase(s.platform)}</strong>
+              <span class="muted">${new Date(s.fetched_at).toLocaleDateString()}</span></div>
+            <a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(s.url)}</a>
+            ${s.title ? `<div>${esc(s.title)}</div>` : ""}
+            ${s.raw_text ? `<div class="muted">${esc(s.raw_text.slice(0, 400))}</div>` : ""}
+          </div>`).join("")}</div>`
+      : `<div class="empty">No social snapshots. Import a link to capture one.</div>`;
+  }
+}
+
+/* ── AI actions ────────────────────────────────────────────────────────── */
+async function generateDossier(id) {
+  const btn = $("#dossier-btn");
+  const area = $("#ai-area");
+  if (btn) btn.innerHTML = `<span class="spinner"></span> Thinking…`;
+  area.innerHTML = `<div class="card mb"><div class="ai-box"><span class="spinner"></span> Generating dossier…</div></div>`;
+  try {
+    const c = await api(`/contacts/${id}/dossier`, { method: "POST" });
+    area.innerHTML = dossierHtml(c.ai_dossier);
+    if (btn) btn.innerHTML = "✦ Refresh dossier";
+  } catch (e) { toast(e.message, true); area.innerHTML = ""; if (btn) btn.textContent = "✦ Generate dossier"; }
+}
+
+async function showRecommendation(id) {
+  openModal(`<h3>Outreach suggestion</h3><div class="ai-box"><span class="spinner"></span> Thinking…</div>
+    <div class="modal-actions"><button class="btn" id="m-close">Close</button></div>`);
+  $("#m-close").addEventListener("click", closeModal);
+  try {
+    const r = await api(`/contacts/${id}/recommendation`);
+    openModal(`
+      <h3>Outreach suggestion ${r.source === "ai" ? "" : '<span class="badge off">rule-based</span>'}</h3>
+      <div class="rec-grid">
+        <div><span class="muted">Should contact</span><br><strong>${r.should_contact ? "Yes" : "Not urgent"}</strong></div>
+        <div><span class="muted">Urgency</span><br><strong>${titleCase(r.urgency)}</strong></div>
+        <div><span class="muted">Channel</span><br><strong>${titleCase(r.channel)}</strong></div>
+        <div><span class="muted">Timing</span><br><strong>${esc(r.timing)}</strong></div>
+      </div>
+      <p class="muted">${esc(r.reason)}</p>
+      ${r.talking_points.length ? `<h4>Talking points</h4><ul>${r.talking_points.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+      <h4>Draft message</h4>
+      <div class="ai-box">${esc(r.draft_message)}</div>
+      <div class="modal-actions">
+        <button class="btn" id="m-copy">Copy draft</button>
+        <button class="btn primary" id="m-close2">Done</button>
+      </div>`);
+    $("#m-copy").addEventListener("click", () => { navigator.clipboard?.writeText(r.draft_message); toast("Draft copied"); });
+    $("#m-close2").addEventListener("click", closeModal);
+  } catch (e) { toast(e.message, true); closeModal(); }
+}
+
+async function draftEventMessage(contactId, eventId) {
+  try {
+    const r = await api(`/life-events/${eventId}/message`, { method: "POST" });
+    toast("Message drafted");
+    openContactDetail(contactId, "events");
+  } catch (e) { toast(e.message, true); }
+}
+
+async function markEvent(contactId, eventId) {
+  try {
+    await api(`/life-events/${eventId}`, { method: "PATCH", body: JSON.stringify({ status: "acted" }) });
+    openContactDetail(contactId, "events");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+function openContactForm(c = null) {
+  const v = (k) => (c && c[k] != null ? esc(c[k]) : "");
+  openModal(`
+    <h3>${c ? "Edit contact" : "New contact"}</h3>
+    <form id="contact-form">
+      <div class="form-grid">
+        <label>First name *<input name="first_name" required value="${v("first_name")}" /></label>
+        <label>Last name<input name="last_name" value="${v("last_name")}" /></label>
+        <label>Relationship
+          <select name="relationship_type">${RELATIONSHIPS.map((r) => `<option value="${r}" ${c?.relationship_type === r ? "selected" : ""}>${titleCase(r)}</option>`).join("")}</select></label>
+        <label>Contact frequency
+          <select name="contact_frequency">${FREQUENCIES.map((f) => `<option value="${f}" ${c?.contact_frequency === f ? "selected" : "" }>${titleCase(f)}</option>`).join("")}</select></label>
+        <label>Company<input name="company" value="${v("company")}" /></label>
+        <label>Position<input name="position" value="${v("position")}" /></label>
+        <label>Location<input name="location" value="${v("location")}" /></label>
+        <label>Birthday<input type="date" name="birth_date" value="${v("birth_date")}" /></label>
+        <label>Email<input type="email" name="email" value="${v("email")}" /></label>
+        <label>Phone<input name="phone" value="${v("phone")}" /></label>
+        <label>Telegram<input name="telegram" value="${v("telegram")}" /></label>
+        <label>WhatsApp<input name="whatsapp" value="${v("whatsapp")}" /></label>
+        <label>LinkedIn URL<input name="linkedin_url" value="${v("linkedin_url")}" /></label>
+        <label>Instagram URL<input name="instagram_url" value="${v("instagram_url")}" /></label>
+        <label>Facebook URL<input name="facebook_url" value="${v("facebook_url")}" /></label>
+        <label>Twitter/X URL<input name="twitter_url" value="${v("twitter_url")}" /></label>
+        <label class="form-full">Tags (comma separated)<input name="tags" value="${c ? c.tags.map(esc).join(", ") : ""}" /></label>
+        <label class="form-full">Notes<textarea name="notes" rows="3">${v("notes")}</textarea></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="m-cancel">Cancel</button>
+        <button type="submit" class="btn primary">${c ? "Save" : "Create"}</button>
+      </div>
+    </form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#contact-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = {};
+    for (const [k, val] of fd.entries()) {
+      if (k === "tags") body.tags = val.split(",").map((s) => s.trim()).filter(Boolean);
+      else if (val === "") body[k] = null;
+      else body[k] = val;
+    }
+    try {
+      if (c) await api(`/contacts/${c.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/contacts", { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast(c ? "Saved" : "Contact created");
+      if (c) openContactDetail(c.id); else setView("contacts");
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+function openInteractionForm(contactId) {
+  openModal(`
+    <h3>Log interaction</h3>
+    <form id="itx-form">
+      <div class="form-grid">
+        <label>Channel<select name="channel">${CHANNELS.map((c) => `<option value="${c}">${titleCase(c)}</option>`).join("")}</select></label>
+        <label>Direction<select name="direction"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></label>
+        <label>When<input type="date" name="occurred_at" value="${new Date().toISOString().slice(0,10)}" /></label>
+        <label>Sentiment
+          <select name="sentiment">
+            <option value="1">Great (+1)</option><option value="0.5">Good (+0.5)</option>
+            <option value="0" selected>Neutral (0)</option>
+            <option value="-0.5">Tense (-0.5)</option><option value="-1">Bad (-1)</option>
+          </select></label>
+        <label class="form-full">Summary<textarea name="summary" rows="2" placeholder="What did you talk about?"></textarea></label>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Log</button></div>
+    </form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#itx-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = {
+      channel: fd.get("channel"),
+      direction: fd.get("direction"),
+      sentiment: parseFloat(fd.get("sentiment")),
+      summary: fd.get("summary") || null,
+      occurred_at: fd.get("occurred_at") ? new Date(fd.get("occurred_at")).toISOString() : null,
+    };
+    try {
+      await api(`/contacts/${contactId}/interactions`, { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast("Interaction logged"); openContactDetail(contactId, "interactions");
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+function openImportForm(contactId) {
+  openModal(`
+    <h3>Import from a social link</h3>
+    <p class="muted">Paste a public profile or post URL (Instagram, LinkedIn, Facebook, X, a website…). We capture a snapshot${state.aiEnabled ? " and let the AI detect life events." : "."}</p>
+    <form id="imp-form">
+      <input class="form-full" name="url" placeholder="https://…" required style="width:100%" />
+      <label class="flex mt" style="color:var(--muted)"><input type="checkbox" name="analyze" ${state.aiEnabled ? "checked" : ""} style="width:auto" /> &nbsp;Detect life events with AI</label>
+      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Import</button></div>
+    </form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#imp-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const btn = e.target.querySelector("button[type=submit]");
+    btn.innerHTML = `<span class="spinner"></span>`;
+    try {
+      const r = await api(`/contacts/${contactId}/import`, { method: "POST",
+        body: JSON.stringify({ url: fd.get("url"), analyze: !!fd.get("analyze") }) });
+      closeModal();
+      toast(r.detected_events.length ? `Imported · ${r.detected_events.length} event(s) detected` : "Snapshot imported");
+      openContactDetail(contactId, "social");
+    } catch (err) { toast(err.message, true); btn.textContent = "Import"; }
+  });
+}
+
+function confirmDelete(c) {
+  openModal(`<h3>Delete ${esc(c.full_name)}?</h3>
+    <p class="muted">This removes the contact and all their history. This cannot be undone.</p>
+    <div class="modal-actions"><button class="btn" id="m-cancel">Cancel</button>
+      <button class="btn danger" id="m-del">Delete</button></div>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#m-del").addEventListener("click", async () => {
+    try { await api(`/contacts/${c.id}`, { method: "DELETE" }); closeModal(); toast("Contact deleted"); setView("contacts"); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ── Misc ──────────────────────────────────────────────────────────────── */
+function showError(e) {
+  $("#main").innerHTML = `<div class="empty">⚠ ${esc(e.message)}</div>`;
+}
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+async function init() {
+  try {
+    const s = await api("/ai/status");
+    state.aiEnabled = s.ai_enabled;
+    const badge = $("#ai-badge");
+    badge.textContent = s.ai_enabled ? "AI on" : "AI off";
+    badge.className = "badge " + (s.ai_enabled ? "on" : "off");
+  } catch (_) {}
+  setView("dashboard");
+}
+init();

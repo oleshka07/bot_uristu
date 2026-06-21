@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Networking AI</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">◆</span>
+        <div>
+          <h1>Networking AI</h1>
+          <small id="ai-badge" class="badge">checking…</small>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="contacts">Contacts</button>
+      </nav>
+      <button id="add-contact-btn" class="btn primary block">+ New contact</button>
+      <div class="sidebar-foot">
+        <small>Relationship intelligence,<br />powered by Claude.</small>
+      </div>
+    </aside>
+
+    <main id="main">
+      <!-- views injected here -->
+    </main>
+  </div>
+
+  <!-- Modal host -->
+  <div id="modal-host" class="modal-host hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
