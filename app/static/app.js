@@ -57,6 +57,12 @@ function daysLabel(n) {
   return `in ${n} days`;
 }
 
+function sourceBadge(source) {
+  if (!source || source === "manual") return "";
+  const label = source === "gmail" ? "via Gmail" : source === "gcal" ? "via Calendar" : "via " + source;
+  return `<span class="pill" style="margin-left:6px">${label}</span>`;
+}
+
 /* ── Modal ─────────────────────────────────────────────────────────────── */
 function openModal(html) {
   $("#modal").innerHTML = html;
@@ -74,6 +80,7 @@ function setView(view) {
     b.classList.toggle("active", b.dataset.view === view));
   if (view === "dashboard") renderDashboard();
   else if (view === "contacts") renderContacts();
+  else if (view === "integrations") renderIntegrations();
 }
 document.querySelectorAll(".nav-item").forEach((b) =>
   b.addEventListener("click", () => setView(b.dataset.view)));
@@ -305,7 +312,7 @@ function renderTab(c, tab) {
       ? `<div class="card">${c.interactions.map((i) => `
           <div class="timeline-item">
             <div class="flex between">
-              <strong>${titleCase(i.channel)} · ${titleCase(i.direction)}</strong>
+              <strong>${titleCase(i.channel)} · ${titleCase(i.direction)} ${sourceBadge(i.source)}</strong>
               <span class="muted">${new Date(i.occurred_at).toLocaleDateString()}</span>
             </div>
             <div>${esc(i.summary || "—")}</div>
@@ -529,11 +536,81 @@ function confirmDelete(c) {
   });
 }
 
+/* ── Integrations ──────────────────────────────────────────────────────── */
+async function renderIntegrations() {
+  const main = $("#main");
+  main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div><div class="empty"><span class="spinner"></span></div>`;
+  let st;
+  try { st = await api("/integrations/google/status"); } catch (e) { return showError(e); }
+
+  let body;
+  if (!st.configured) {
+    body = `<p class="muted">Google is not configured on the server. Set
+      <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> in
+      <code>.env</code> (see README), then reload.</p>`;
+  } else if (!st.connected) {
+    body = `<p class="muted">Connect your Google account so emails and calendar
+      meetings with your contacts become interactions automatically.</p>
+      <a class="btn primary" href="/api/integrations/google/authorize">Connect Google</a>`;
+  } else {
+    body = `
+      <div class="flex between mb">
+        <div><strong>Connected</strong> <span class="badge on">${esc(st.account_email || "")}</span></div>
+        <button class="btn danger small" id="g-disconnect">Disconnect</button>
+      </div>
+      <p class="muted">Last sync: ${st.last_sync_at ? new Date(st.last_sync_at).toLocaleString() : "never"}</p>
+      <div class="flex">
+        <button class="btn primary" id="g-sync">↻ Sync now</button>
+        <button class="btn" id="g-daily">Run daily job</button>
+      </div>
+      <div id="g-result" class="mt"></div>`;
+  }
+
+  main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div>
+    <div class="card" style="max-width:620px">
+      <h3 class="section-title">Google (Gmail + Calendar)</h3>
+      ${body}
+    </div>`;
+
+  $("#g-disconnect")?.addEventListener("click", async () => {
+    await api("/integrations/google/disconnect", { method: "POST" });
+    toast("Disconnected"); renderIntegrations();
+  });
+  $("#g-sync")?.addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span> Syncing…`;
+    try {
+      const r = await api("/integrations/google/sync", { method: "POST" });
+      $("#g-result").innerHTML = `<div class="ai-box">Processed ${r.contacts_processed} contacts ·
+        ${r.emails_added} emails · ${r.meetings_added} meetings added.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
+      toast("Sync complete"); renderIntegrations();
+    } catch (err) { toast(err.message, true); btn.textContent = "↻ Sync now"; }
+  });
+  $("#g-daily")?.addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
+    try {
+      const r = await api("/maintenance/run-daily?send_digest=true", { method: "POST" });
+      $("#g-result").innerHTML = `<div class="ai-box">${esc(JSON.stringify(r, null, 2))}</div>`;
+      toast("Daily job ran");
+    } catch (err) { toast(err.message, true); }
+    btn.textContent = "Run daily job";
+  });
+}
+
 /* ── Misc ──────────────────────────────────────────────────────────────── */
 function showError(e) {
   $("#main").innerHTML = `<div class="empty">⚠ ${esc(e.message)}</div>`;
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+function handleOAuthReturn() {
+  const params = new URLSearchParams(location.search);
+  const g = params.get("google");
+  if (!g) return null;
+  if (g === "connected") toast("Google connected: " + (params.get("email") || ""));
+  else if (g === "error") toast("Google error: " + (params.get("detail") || ""), true);
+  history.replaceState({}, "", location.pathname);
+  return g;
+}
 
 async function init() {
   try {
@@ -543,6 +620,7 @@ async function init() {
     badge.textContent = s.ai_enabled ? "AI on" : "AI off";
     badge.className = "badge " + (s.ai_enabled ? "on" : "off");
   } catch (_) {}
-  setView("dashboard");
+  const oauth = handleOAuthReturn();
+  setView(oauth ? "integrations" : "dashboard");
 }
 init();

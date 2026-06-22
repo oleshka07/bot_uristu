@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import settings
 from .database import init_db
-from .routers import ai, contacts, dashboard, imports
+from .routers import ai, contacts, dashboard, imports, integrations
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,6 +39,16 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    from . import scheduler
+
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    from . import scheduler
+
+    scheduler.shutdown()
 
 
 @app.get("/api/health", tags=["meta"])
@@ -55,6 +65,7 @@ app.include_router(dashboard.router)
 app.include_router(contacts.router)
 app.include_router(ai.router)
 app.include_router(imports.router)
+app.include_router(integrations.router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

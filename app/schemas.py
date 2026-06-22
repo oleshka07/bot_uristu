@@ -45,6 +45,7 @@ class InteractionOut(BaseModel):
     direction: Direction
     sentiment: float
     summary: str | None
+    source: str = "manual"
 
 
 class LifeEventIn(BaseModel):

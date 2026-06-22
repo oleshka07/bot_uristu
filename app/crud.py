@@ -151,6 +151,48 @@ def add_interaction(
     return itx
 
 
+def interaction_exists(db: Session, contact_id: int, external_id: str) -> bool:
+    return (
+        db.scalar(
+            select(models.Interaction.id).where(
+                models.Interaction.contact_id == contact_id,
+                models.Interaction.external_id == external_id,
+            )
+        )
+        is not None
+    )
+
+
+def add_synced_interaction(
+    db: Session,
+    contact: models.Contact,
+    *,
+    occurred_at: datetime,
+    channel: models.Channel,
+    direction: models.Direction,
+    summary: str | None,
+    source: str,
+    external_id: str,
+    sentiment: float = 0.0,
+) -> models.Interaction:
+    """Insert an interaction from an external feed. Warmth is *not* refreshed
+    here — the caller refreshes once after a batch for efficiency. The caller
+    must ensure the external_id is not already present."""
+    itx = models.Interaction(
+        contact_id=contact.id,
+        occurred_at=occurred_at,
+        channel=channel,
+        direction=direction,
+        sentiment=sentiment,
+        summary=summary,
+        source=source,
+        external_id=external_id,
+    )
+    db.add(itx)
+    db.flush()
+    return itx
+
+
 def delete_interaction(db: Session, interaction: models.Interaction) -> None:
     contact = interaction.contact
     db.delete(interaction)

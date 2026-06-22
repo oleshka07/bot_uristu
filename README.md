@@ -24,9 +24,15 @@ powered by Claude (`claude-opus-4-8`).
 - **AI dossier** — Claude writes a concise brief on each person from their data.
 - **Outreach suggestions** — whether/how/when to reach out, talking points, and
   a ready-to-send draft message.
+- **Gmail + Calendar auto-sync** — connect your Google account and real emails
+  and meetings with your contacts become interactions automatically, so warmth
+  reflects reality with zero manual logging.
+- **Daily automation** — an optional scheduler refreshes warmth, syncs Google
+  and emails you a digest of who to contact today.
 - **Social import** — paste a profile/post URL to capture a snapshot; the AI
   scans it for significant life events (new job, move, baby, launch…) and
-  suggests congratulations messages.
+  suggests congratulations messages. A scraping provider can be plugged in for
+  JS-heavy networks (Instagram/LinkedIn).
 - **Graceful without AI** — no API key? It falls back to rule-based
   recommendations so the product still works.
 
@@ -112,6 +118,47 @@ startup. To load demo data once: `docker compose exec web python -m app.seed`.
 | `DAILY_SUGGESTIONS`    | `5`                    | People suggested per day.                 |
 | `UPCOMING_WINDOW_DAYS` | `14`                   | Look-ahead for birthdays/key dates.       |
 | `CORS_ORIGINS`         | `*`                    | Allowed origins.                          |
+| `GOOGLE_CLIENT_ID/SECRET` | _(empty)_           | Enables Gmail + Calendar sync.            |
+| `GOOGLE_REDIRECT_URI`  | localhost callback     | Must match the OAuth client exactly.      |
+| `SYNC_WINDOW_DAYS`     | `120`                  | How far back to pull email/calendar.      |
+| `SCHEDULER_ENABLED`    | `false`                | Run the daily job in-process.             |
+| `DAILY_RUN_HOUR`       | `8`                    | Server hour for the daily job.            |
+| `DIGEST_EMAIL_TO`      | account email          | Where to send the daily digest.           |
+| `SCRAPER_PROVIDER/KEY` | _(empty)_              | Scraping API for JS-heavy social pages.   |
+
+---
+
+## Gmail + Calendar auto-sync
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) create a
+   project, **enable the Gmail API and Google Calendar API**, and create an
+   OAuth **Web application** client.
+2. Add your redirect URI to the client (must match `GOOGLE_REDIRECT_URI`):
+   - local: `http://localhost:8000/api/integrations/google/callback`
+   - prod: `https://your-domain/api/integrations/google/callback`
+3. Put `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env` and restart.
+4. Open the app → **Integrations** → **Connect Google**, approve access.
+5. Click **Sync now** (or let the daily job do it). Emails and meetings with
+   any contact whose email is on file become interactions, tagged *via Gmail*
+   / *via Calendar*, de-duplicated, and feed the warmth score.
+
+Scopes requested: `gmail.readonly`, `gmail.send` (for the digest),
+`calendar.readonly`, `userinfo.email`. The refresh token is stored in the
+`integration_tokens` table.
+
+## Daily automation
+
+Set `SCHEDULER_ENABLED=true` to run a daily job at `DAILY_RUN_HOUR` that:
+refreshes warmth → syncs Google → emails you a digest of who to contact.
+
+For multi-process / cron-based setups, leave the scheduler off and run:
+
+```bash
+python -m app.run_daily          # or: docker compose exec web python -m app.run_daily
+```
+
+Trigger on demand from **Integrations → Run daily job**, or
+`POST /api/maintenance/run-daily?send_digest=true`.
 
 ---
 
@@ -146,8 +193,13 @@ app/
   crud.py        database operations
   warmth.py      relationship scoring engine
   ai.py          Claude integration + rule-based fallbacks
-  social.py      social import connector framework
+  social.py      social import connector framework (+ scraper provider)
   dashboard.py   daily suggestions & stats
+  daily.py       the daily job (warmth + sync + digest)
+  scheduler.py   background scheduler
+  run_daily.py   cron entrypoint (python -m app.run_daily)
+  migrations.py  idempotent schema reconciliation
+  integrations/  Google Gmail + Calendar (OAuth + sync + send)
   seed.py        sample data
   routers/       API endpoints
   static/        single-page frontend

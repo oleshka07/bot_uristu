@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .config import settings
+
 logger = logging.getLogger("networking.social")
 
 _USER_AGENT = (
@@ -132,4 +134,39 @@ def fetch_snapshot(url: str) -> SnapshotData:
             return connector(url)
         except Exception as exc:  # pragma: no cover
             logger.warning("Connector for %s failed: %s", platform, exc)
+    # A configured scraping provider can render JS-heavy public pages.
+    if settings.scraper_provider and settings.scraper_api_key:
+        return fetch_with_scraper(url)
+    return fetch_generic(url)
+
+
+# ── Scraping-provider connector (renders JS) ─────────────────────────────────
+
+
+def fetch_with_scraper(url: str) -> SnapshotData:
+    """Fetch a page through a rendering scraper API (currently ScrapingBee).
+
+    This is what makes Instagram / LinkedIn / Facebook public pages actually
+    yield content, since they require JavaScript. Configure via
+    SCRAPER_PROVIDER + SCRAPER_API_KEY. Falls back to the generic fetch.
+    """
+    platform = detect_platform(url)
+    provider = (settings.scraper_provider or "").lower()
+    try:
+        if provider == "scrapingbee":
+            with httpx.Client(timeout=45.0) as client:
+                resp = client.get(
+                    "https://app.scrapingbee.com/api/v1/",
+                    params={
+                        "api_key": settings.scraper_api_key,
+                        "url": url,
+                        "render_js": "true",
+                        "wait": "2500",
+                    },
+                )
+                resp.raise_for_status()
+                return _parse_html(url, resp.text, platform)
+        logger.info("Unknown scraper provider '%s'; using generic fetch.", provider)
+    except Exception as exc:
+        logger.info("Scraper fetch failed for %s: %s", url, exc)
     return fetch_generic(url)

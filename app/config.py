@@ -26,6 +26,22 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
+    # Google integration (Gmail + Calendar sync)
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_redirect_uri: str = "http://localhost:8000/api/integrations/google/callback"
+    # How many days back to pull emails / calendar events when syncing.
+    sync_window_days: int = 120
+
+    # Daily automation (background scheduler)
+    scheduler_enabled: bool = False
+    daily_run_hour: int = 8  # local server hour to run the daily job
+    digest_email_to: str | None = None  # where to send the daily digest
+
+    # Social scraping provider (for JS-heavy networks)
+    scraper_provider: str | None = None  # e.g. "scrapingbee"
+    scraper_api_key: str | None = None
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
@@ -35,6 +51,10 @@ class Settings(BaseSettings):
     @property
     def ai_enabled(self) -> bool:
         return bool(self.anthropic_api_key)
+
+    @property
+    def google_configured(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret)
 
 
 @lru_cache

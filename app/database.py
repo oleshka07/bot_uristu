@@ -38,7 +38,9 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create all tables. Imported models register themselves on Base."""
+    """Create all tables, then reconcile columns added in later versions."""
     from . import models  # noqa: F401  (ensures models are registered)
+    from .migrations import ensure_schema
 
     Base.metadata.create_all(bind=engine)
+    ensure_schema(engine)

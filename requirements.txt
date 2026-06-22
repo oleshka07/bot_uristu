@@ -10,3 +10,7 @@ httpx>=0.28
 python-dateutil>=2.9
 beautifulsoup4>=4.12
 email-validator>=2.2
+google-api-python-client>=2.150
+google-auth>=2.36
+google-auth-oauthlib>=1.2
+apscheduler>=3.10

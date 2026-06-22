@@ -1,0 +1,44 @@
+"""Tiny, dependency-free schema reconciliation.
+
+We use SQLAlchemy's create_all (no Alembic) to keep this single-user tool
+simple. create_all adds *new tables* but never alters existing ones, so when
+we add a column to an existing table we patch it here with idempotent
+ALTER TABLE ADD COLUMN statements. Safe on both SQLite and PostgreSQL.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
+
+logger = logging.getLogger("networking.migrations")
+
+# table -> {column: SQL type for ADD COLUMN}
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "interactions": {
+        "source": "VARCHAR(40) DEFAULT 'manual'",
+        "external_id": "VARCHAR(200)",
+    },
+}
+
+
+def ensure_schema(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, columns in _ADDED_COLUMNS.items():
+        if table not in existing_tables:
+            continue  # create_all will build it fresh with all columns
+        present = {c["name"] for c in inspector.get_columns(table)}
+        for column, ddl in columns.items():
+            if column in present:
+                continue
+            stmt = f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(stmt))
+                logger.info("Schema patch applied: %s", stmt)
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning("Schema patch failed (%s): %s", stmt, exc)

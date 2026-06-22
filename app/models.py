@@ -223,7 +223,15 @@ class Interaction(Base):
     sentiment: Mapped[float] = mapped_column(Float, default=0.0)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Provenance / de-duplication for auto-synced interactions.
+    source: Mapped[str] = mapped_column(String(40), default="manual")  # manual / gmail / gcal
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+
     contact: Mapped[Contact] = relationship(back_populates="interactions")
+
+    __table_args__ = (
+        UniqueConstraint("contact_id", "external_id", name="uq_interaction_external"),
+    )
 
 
 class LifeEvent(Base):
@@ -269,3 +277,23 @@ class SocialSnapshot(Base):
     contact: Mapped[Contact] = relationship(back_populates="social_snapshots")
 
     __table_args__ = (UniqueConstraint("contact_id", "url", name="uq_contact_social_url"),)
+
+
+class IntegrationToken(Base):
+    """OAuth credentials for an external integration (e.g. Google).
+
+    Single-user internal tool: one token per provider. Stored as the JSON the
+    Google client library serialises (includes the refresh token)."""
+
+    __tablename__ = "integration_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    token_json: Mapped[str] = mapped_column(Text)
+    account_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
