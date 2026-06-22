@@ -136,6 +136,14 @@ def _handle_command(text: str) -> str:
 
 
 def run_polling() -> None:
+    if not settings.telegram_polling_enabled:
+        logger.warning(
+            "TELEGRAM_POLLING_ENABLED is false — not polling. In the single-bot "
+            "setup, Chater serves commands and pulls /api/digest/text. Set the "
+            "flag only if running a SEPARATE Networking AI bot with its own token."
+        )
+        while True:
+            time.sleep(3600)
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN not set; bot idle. Set it and restart.")
         while True:  # stay alive so the container doesn't restart-loop

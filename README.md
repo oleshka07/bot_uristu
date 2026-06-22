@@ -49,6 +49,8 @@ powered by Claude (`claude-opus-4-8`).
   GitHub Actions auto-deploy, coexisting with the Chater bot.
 - **`docs/AUTONOMY.md`** — how to grant the assistant safe, autonomous
   deploy/config access without exposing secrets.
+- **`docs/CHATER_BRIDGE.md`** — single-bot setup: the existing Chater bot pulls
+  `GET /api/digest/text` and serves networking commands (no second bot).
 
 ## Architecture
 

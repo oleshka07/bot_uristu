@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # Telegram (digest delivery + lightweight command bot)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    # Run Networking AI's OWN long-polling bot. Keep OFF when reusing the
+    # Chater bot (two pollers on one token cause a 409 Conflict). Default: the
+    # single-bot bridge — Chater pulls /api/digest/text and serves commands.
+    telegram_polling_enabled: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

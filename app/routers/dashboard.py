@@ -16,6 +16,19 @@ def get_dashboard(db: Session = Depends(get_db)):
     return dashboard.build_dashboard(db)
 
 
+@router.get("/digest/text")
+def digest_text(db: Session = Depends(get_db)):
+    """The daily digest as ready-to-send text (Telegram HTML).
+
+    This is the bridge for the Chater bot: it fetches this and forwards it to
+    Telegram with parse_mode=HTML, so everything lives in a single bot.
+    """
+    from .. import telegram
+
+    data = dashboard.build_dashboard(db)
+    return {"text": telegram.digest_text(data), "parse_mode": "HTML"}
+
+
 @router.post("/maintenance/refresh-warmth")
 def refresh_warmth(db: Session = Depends(get_db)):
     count = crud.refresh_all_warmth(db)
