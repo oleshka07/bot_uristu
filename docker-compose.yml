@@ -36,8 +36,26 @@ services:
       DIGEST_EMAIL_TO: ${DIGEST_EMAIL_TO:-}
       SCRAPER_PROVIDER: ${SCRAPER_PROVIDER:-}
       SCRAPER_API_KEY: ${SCRAPER_API_KEY:-}
+      SYNC_AI_SENTIMENT: ${SYNC_AI_SENTIMENT:-true}
+      CHATER_DATABASE_URL: ${CHATER_DATABASE_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     ports:
       - "${WEB_PORT:-8000}:8000"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://networking:${POSTGRES_PASSWORD:-networking}@db:5432/networking
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-opus-4-8}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    command: ["python", "-m", "app.run_bot"]
 
 volumes:
   pgdata:

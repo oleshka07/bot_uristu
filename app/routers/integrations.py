@@ -1,4 +1,4 @@
-"""Google integration endpoints: connect, sync, disconnect."""
+"""Integration endpoints: Google (Gmail+Calendar), Chater DB, Telegram."""
 
 from __future__ import annotations
 
@@ -8,17 +8,20 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..integrations import google
+from ..integrations import chater, google
 
-router = APIRouter(prefix="/api/integrations/google", tags=["integrations"])
+router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
 
-@router.get("/status")
+# ── Google ───────────────────────────────────────────────────────────────────
+
+
+@router.get("/google/status")
 def google_status(db: Session = Depends(get_db)):
     return google.status(db)
 
 
-@router.get("/authorize")
+@router.get("/google/authorize")
 def google_authorize():
     if not settings.google_configured:
         raise HTTPException(
@@ -28,7 +31,7 @@ def google_authorize():
     return RedirectResponse(google.build_authorization_url())
 
 
-@router.get("/callback")
+@router.get("/google/callback")
 def google_callback(
     code: str | None = None,
     error: str | None = None,
@@ -45,16 +48,61 @@ def google_callback(
     return RedirectResponse(f"/?google=connected&email={email}")
 
 
-@router.post("/sync")
+@router.post("/google/sync")
 def google_sync(
     contact_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    report = google.sync(db, contact_id=contact_id)
-    return report.as_dict()
+    return google.sync(db, contact_id=contact_id).as_dict()
 
 
-@router.post("/disconnect")
+@router.post("/google/disconnect")
 def google_disconnect(db: Session = Depends(get_db)):
     google.disconnect(db)
     return {"disconnected": True}
+
+
+# ── Chater (existing Telegram bot database) ──────────────────────────────────
+
+
+@router.get("/chater/status")
+def chater_status():
+    return chater.status()
+
+
+@router.get("/chater/inspect")
+def chater_inspect():
+    """Dry run — report Chater tables/columns we'd map. No writes."""
+    return chater.inspect()
+
+
+@router.post("/chater/import")
+def chater_import(
+    message_limit: int = Query(default=200, ge=0, le=5000),
+    db: Session = Depends(get_db),
+):
+    return chater.import_data(db, message_limit=message_limit).as_dict()
+
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/telegram/status")
+def telegram_status():
+    return {
+        "configured": settings.telegram_configured,
+        "chat_id_set": bool(settings.telegram_chat_id),
+    }
+
+
+@router.post("/telegram/test")
+def telegram_test():
+    from .. import telegram
+
+    ok = telegram.send_message("✅ Networking AI is connected to Telegram.")
+    if not ok:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Could not send. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
+        )
+    return {"sent": True}

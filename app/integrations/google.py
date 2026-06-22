@@ -207,16 +207,17 @@ def sync(db: Session, contact_id: int | None = None) -> SyncReport:
         if not contact or not contact.email:
             continue
         report.contacts_processed += 1
-        changed = False
+        created: list[models.Interaction] = []
         try:
-            changed |= _sync_gmail(db, gmail, contact, my_email, report)
+            _sync_gmail(db, gmail, contact, my_email, report, created)
         except Exception as exc:  # pragma: no cover
             report.errors.append(f"Gmail sync failed for {contact.email}: {exc}")
         try:
-            changed |= _sync_calendar(db, calendar, contact, cutoff, report)
+            _sync_calendar(db, calendar, contact, cutoff, report, created)
         except Exception as exc:  # pragma: no cover
             report.errors.append(f"Calendar sync failed for {contact.email}: {exc}")
-        if changed:
+        if created:
+            _apply_sentiment(created)
             db.refresh(contact)
             warmth.refresh(contact)
             db.commit()
@@ -228,12 +229,25 @@ def sync(db: Session, contact_id: int | None = None) -> SyncReport:
     return report
 
 
+def _apply_sentiment(interactions: list[models.Interaction]) -> None:
+    """Score the tone of freshly-synced interactions (if AI sentiment is on)."""
+    if not settings.sync_ai_sentiment or not settings.ai_enabled:
+        return
+    from .. import ai
+
+    texts = [(i.summary or "") for i in interactions]
+    scores = ai.score_sentiments(texts)
+    for itx, score in zip(interactions, scores):
+        itx.sentiment = score
+
+
 def _sync_gmail(
     db: Session,
     gmail,
     contact: models.Contact,
     my_email: str,
     report: SyncReport,
+    created: list,
 ) -> bool:
     email = contact.email.lower()
     query = f"(from:{email} OR to:{email}) newer_than:{settings.sync_window_days}d"
@@ -275,15 +289,17 @@ def _sync_gmail(
         subject = headers.get("subject", "(no subject)")
         snippet = (meta.get("snippet") or "").strip()
         summary = subject if not snippet else f"{subject} — {snippet[:200]}"
-        crud.add_synced_interaction(
-            db,
-            contact,
-            occurred_at=occurred_at,
-            channel=models.Channel.email,
-            direction=direction,
-            summary=summary,
-            source="gmail",
-            external_id=external_id,
+        created.append(
+            crud.add_synced_interaction(
+                db,
+                contact,
+                occurred_at=occurred_at,
+                channel=models.Channel.email,
+                direction=direction,
+                summary=summary,
+                source="gmail",
+                external_id=external_id,
+            )
         )
         report.emails_added += 1
         added = True
@@ -296,6 +312,7 @@ def _sync_calendar(
     contact: models.Contact,
     cutoff: datetime,
     report: SyncReport,
+    created: list,
 ) -> bool:
     email = contact.email.lower()
     now = datetime.now(timezone.utc)
@@ -325,15 +342,17 @@ def _sync_calendar(
         if occurred_at is None or occurred_at > now:
             continue
         summary = event.get("summary", "Meeting")
-        crud.add_synced_interaction(
-            db,
-            contact,
-            occurred_at=occurred_at,
-            channel=models.Channel.meeting,
-            direction=models.Direction.outbound,
-            summary=summary,
-            source="gcal",
-            external_id=external_id,
+        created.append(
+            crud.add_synced_interaction(
+                db,
+                contact,
+                occurred_at=occurred_at,
+                channel=models.Channel.meeting,
+                direction=models.Direction.outbound,
+                summary=summary,
+                source="gcal",
+                external_id=external_id,
+            )
         )
         report.meetings_added += 1
         added = True

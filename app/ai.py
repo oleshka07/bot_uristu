@@ -230,6 +230,65 @@ def recommend_outreach(contact: models.Contact) -> dict:
     return _fallback_recommendation(contact)
 
 
+_SENTIMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "array",
+            "items": {"type": "number"},
+        }
+    },
+    "required": ["scores"],
+    "additionalProperties": False,
+}
+
+
+def score_sentiments(texts: list[str]) -> list[float]:
+    """Score the tone of each text in [-1, 1] (warm/positive → +1).
+
+    Batched into a single Claude call for efficiency. Returns 0.0 for every
+    item when AI is unavailable or on any error (neutral, never blocks sync).
+    """
+    if not texts:
+        return []
+    client = _get_client()
+    if client is None:
+        return [0.0] * len(texts)
+
+    numbered = "\n".join(f"{i+1}. {t[:400]}" for i, t in enumerate(texts))
+    system = (
+        "You rate the emotional tone of short interaction snippets (emails, "
+        "meeting titles, chat messages) from the point of view of relationship "
+        "warmth. Return a JSON array 'scores' with one number per item in the "
+        "same order, each between -1 (cold/negative/conflict) and 1 "
+        "(warm/positive/friendly); 0 is neutral or purely transactional."
+    )
+    prompt = f"Rate these {len(texts)} items:\n{numbered}"
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=1000,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={
+                "format": {"type": "json_schema", "schema": _SENTIMENT_SCHEMA}
+            },
+        )
+        data = _extract_json(resp)
+        if isinstance(data, dict) and isinstance(data.get("scores"), list):
+            scores = data["scores"]
+            out: list[float] = []
+            for i in range(len(texts)):
+                try:
+                    out.append(max(-1.0, min(1.0, float(scores[i]))))
+                except (IndexError, TypeError, ValueError):
+                    out.append(0.0)
+            return out
+    except Exception as exc:  # pragma: no cover
+        logger.warning("score_sentiments failed: %s", exc)
+    return [0.0] * len(texts)
+
+
 def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> str:
     """A short congratulatory / supportive message for a life event."""
     client = _get_client()

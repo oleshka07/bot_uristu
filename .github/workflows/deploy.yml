@@ -1,0 +1,54 @@
+name: Deploy to Hetzner
+
+# Auto-deploys on every push to the working branch. The server pulls the new
+# code and rebuilds the containers. Secrets are never printed.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   SSH_HOST          server IP, e.g. 46.225.132.220
+#   SSH_USER          ssh user, e.g. root
+#   SSH_PRIVATE_KEY   a private key whose public half is in the server's
+#                     ~/.ssh/authorized_keys (generate a dedicated deploy key)
+#   SSH_PORT          optional, defaults to 22
+#   DEPLOY_PATH       e.g. /root/projects/networking-ai
+#   ENV_FILE          the full contents of the production .env file
+#
+# One-time server bootstrap is documented in docs/DEPLOY_HETZNER.md.
+
+on:
+  push:
+    branches:
+      - claude/networking-ai-contact-service-o73dse
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: ENV_FILE,DEPLOY_PATH,BRANCH
+          script: |
+            set -e
+            BRANCH="${BRANCH:-claude/networking-ai-contact-service-o73dse}"
+            mkdir -p "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH"
+            if [ ! -d .git ]; then
+              echo "Repo not present. Clone it once (see docs/DEPLOY_HETZNER.md)."
+              exit 1
+            fi
+            git fetch origin "$BRANCH"
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            printf '%s' "$ENV_FILE" > .env
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            docker image prune -f
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          BRANCH: ${{ github.ref_name }}

@@ -25,10 +25,14 @@ powered by Claude (`claude-opus-4-8`).
 - **Outreach suggestions** — whether/how/when to reach out, talking points, and
   a ready-to-send draft message.
 - **Gmail + Calendar auto-sync** — connect your Google account and real emails
-  and meetings with your contacts become interactions automatically, so warmth
-  reflects reality with zero manual logging.
-- **Daily automation** — an optional scheduler refreshes warmth, syncs Google
-  and emails you a digest of who to contact today.
+  and meetings with your contacts become interactions automatically (with AI
+  tone scoring), so warmth reflects reality with zero manual logging.
+- **Chater import** — pull contacts and Telegram message history straight from
+  your existing Chater bot's PostgreSQL database (schema auto-detected).
+- **Telegram** — receive the daily digest in Telegram and query your network
+  with a command bot (`/today`, `/due`, `/find`).
+- **Daily automation** — an optional scheduler refreshes warmth, syncs Google,
+  imports nothing destructive, and sends your digest by email and/or Telegram.
 - **Social import** — paste a profile/post URL to capture a snapshot; the AI
   scans it for significant life events (new job, move, baby, launch…) and
   suggests congratulations messages. A scraping provider can be plugged in for
@@ -37,6 +41,14 @@ powered by Claude (`claude-opus-4-8`).
   recommendations so the product still works.
 
 ---
+
+## Detailed guides
+
+- **`docs/SETUP_GOOGLE.md`** — click-by-click Google Cloud OAuth setup.
+- **`docs/DEPLOY_HETZNER.md`** — deploy to Hetzner with Caddy auto-HTTPS and
+  GitHub Actions auto-deploy, coexisting with the Chater bot.
+- **`docs/AUTONOMY.md`** — how to grant the assistant safe, autonomous
+  deploy/config access without exposing secrets.
 
 ## Architecture
 

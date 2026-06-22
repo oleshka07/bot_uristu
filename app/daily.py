@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from . import crud, dashboard
+from . import crud, dashboard, telegram
 from .config import settings
 from .database import SessionLocal
 from .integrations import google
@@ -73,6 +73,7 @@ def run_daily_job(send_digest: bool = True) -> dict:
         summary["due_now"] = data.stats.due_now
 
         if send_digest:
+            # Email digest (via Gmail, if connected).
             recipient = settings.digest_email_to or (
                 g_status.get("account_email") if g_status["connected"] else None
             )
@@ -85,6 +86,11 @@ def run_daily_job(send_digest: bool = True) -> dict:
             else:
                 summary["digest_skipped"] = (
                     "No recipient or Google not connected (needed to send mail)."
+                )
+            # Telegram digest (independent of email).
+            if settings.telegram_configured and settings.telegram_chat_id:
+                summary["telegram_sent"] = telegram.send_message(
+                    telegram.digest_text(data)
                 )
         logger.info("Daily job finished: %s", summary)
     finally:

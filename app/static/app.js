@@ -540,59 +540,116 @@ function confirmDelete(c) {
 async function renderIntegrations() {
   const main = $("#main");
   main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div><div class="empty"><span class="spinner"></span></div>`;
-  let st;
-  try { st = await api("/integrations/google/status"); } catch (e) { return showError(e); }
-
-  let body;
-  if (!st.configured) {
-    body = `<p class="muted">Google is not configured on the server. Set
-      <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> in
-      <code>.env</code> (see README), then reload.</p>`;
-  } else if (!st.connected) {
-    body = `<p class="muted">Connect your Google account so emails and calendar
-      meetings with your contacts become interactions automatically.</p>
-      <a class="btn primary" href="/api/integrations/google/authorize">Connect Google</a>`;
-  } else {
-    body = `
-      <div class="flex between mb">
-        <div><strong>Connected</strong> <span class="badge on">${esc(st.account_email || "")}</span></div>
-        <button class="btn danger small" id="g-disconnect">Disconnect</button>
-      </div>
-      <p class="muted">Last sync: ${st.last_sync_at ? new Date(st.last_sync_at).toLocaleString() : "never"}</p>
-      <div class="flex">
-        <button class="btn primary" id="g-sync">↻ Sync now</button>
-        <button class="btn" id="g-daily">Run daily job</button>
-      </div>
-      <div id="g-result" class="mt"></div>`;
-  }
+  let g, ch, tg;
+  try {
+    [g, ch, tg] = await Promise.all([
+      api("/integrations/google/status"),
+      api("/integrations/chater/status"),
+      api("/integrations/telegram/status"),
+    ]);
+  } catch (e) { return showError(e); }
 
   main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div>
-    <div class="card" style="max-width:620px">
-      <h3 class="section-title">Google (Gmail + Calendar)</h3>
-      ${body}
+    <div class="grid" style="max-width:680px;gap:16px">
+      <div class="card"><h3 class="section-title">Google (Gmail + Calendar)</h3><div id="g-body"></div></div>
+      <div class="card"><h3 class="section-title">Chater (Telegram bot database)</h3><div id="ch-body"></div></div>
+      <div class="card"><h3 class="section-title">Telegram digest & bot</h3><div id="tg-body"></div></div>
     </div>`;
 
-  $("#g-disconnect")?.addEventListener("click", async () => {
-    await api("/integrations/google/disconnect", { method: "POST" });
-    toast("Disconnected"); renderIntegrations();
+  renderGooglePanel(g);
+  renderChaterPanel(ch);
+  renderTelegramPanel(tg);
+}
+
+function renderGooglePanel(st) {
+  const body = $("#g-body");
+  if (!st.configured) {
+    body.innerHTML = `<p class="muted">Not configured. Set <code>GOOGLE_CLIENT_ID</code> /
+      <code>GOOGLE_CLIENT_SECRET</code> (see <code>docs/SETUP_GOOGLE.md</code>), then reload.</p>`;
+    return;
+  }
+  if (!st.connected) {
+    body.innerHTML = `<p class="muted">Connect Google so emails and meetings with your
+      contacts become interactions automatically.</p>
+      <a class="btn primary" href="/api/integrations/google/authorize">Connect Google</a>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="flex between mb">
+      <div><strong>Connected</strong> <span class="badge on">${esc(st.account_email || "")}</span></div>
+      <button class="btn danger small" id="g-disconnect">Disconnect</button>
+    </div>
+    <p class="muted">Last sync: ${st.last_sync_at ? new Date(st.last_sync_at).toLocaleString() : "never"}</p>
+    <div class="flex"><button class="btn primary" id="g-sync">↻ Sync now</button>
+      <button class="btn" id="g-daily">Run daily job</button></div>
+    <div id="g-result" class="mt"></div>`;
+  $("#g-disconnect").addEventListener("click", async () => {
+    await api("/integrations/google/disconnect", { method: "POST" }); toast("Disconnected"); renderIntegrations();
   });
-  $("#g-sync")?.addEventListener("click", async (e) => {
+  $("#g-sync").addEventListener("click", async (e) => {
     const btn = e.target; btn.innerHTML = `<span class="spinner"></span> Syncing…`;
     try {
       const r = await api("/integrations/google/sync", { method: "POST" });
       $("#g-result").innerHTML = `<div class="ai-box">Processed ${r.contacts_processed} contacts ·
-        ${r.emails_added} emails · ${r.meetings_added} meetings added.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
-      toast("Sync complete"); renderIntegrations();
-    } catch (err) { toast(err.message, true); btn.textContent = "↻ Sync now"; }
+        ${r.emails_added} emails · ${r.meetings_added} meetings.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
+      toast("Sync complete");
+    } catch (err) { toast(err.message, true); } btn.textContent = "↻ Sync now";
   });
-  $("#g-daily")?.addEventListener("click", async (e) => {
+  $("#g-daily").addEventListener("click", async (e) => {
     const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
     try {
       const r = await api("/maintenance/run-daily?send_digest=true", { method: "POST" });
-      $("#g-result").innerHTML = `<div class="ai-box">${esc(JSON.stringify(r, null, 2))}</div>`;
-      toast("Daily job ran");
-    } catch (err) { toast(err.message, true); }
-    btn.textContent = "Run daily job";
+      $("#g-result").innerHTML = `<div class="ai-box">${esc(JSON.stringify(r, null, 2))}</div>`; toast("Daily job ran");
+    } catch (err) { toast(err.message, true); } btn.textContent = "Run daily job";
+  });
+}
+
+function renderChaterPanel(st) {
+  const body = $("#ch-body");
+  if (!st.configured) {
+    body.innerHTML = `<p class="muted">Not configured. Set <code>CHATER_DATABASE_URL</code> to your
+      Chater Postgres connection to import existing contacts and Telegram history.</p>`;
+    return;
+  }
+  body.innerHTML = `
+    <p class="muted">Import contacts and Telegram message history from your Chater bot.</p>
+    <div class="flex"><button class="btn" id="ch-inspect">Inspect (dry run)</button>
+      <button class="btn primary" id="ch-import">Import now</button></div>
+    <div id="ch-result" class="mt"></div>`;
+  $("#ch-inspect").addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
+    try {
+      const r = await api("/integrations/chater/inspect");
+      $("#ch-result").innerHTML = `<div class="ai-box">${esc(JSON.stringify(r, null, 2))}</div>`;
+    } catch (err) { toast(err.message, true); } btn.textContent = "Inspect (dry run)";
+  });
+  $("#ch-import").addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span> Importing…`;
+    try {
+      const r = await api("/integrations/chater/import", { method: "POST" });
+      $("#ch-result").innerHTML = `<div class="ai-box">Created ${r.contacts_created} · updated ${r.contacts_updated} ·
+        ${r.interactions_added} interactions.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
+      toast("Chater import complete");
+    } catch (err) { toast(err.message, true); } btn.textContent = "Import now";
+  });
+}
+
+function renderTelegramPanel(st) {
+  const body = $("#tg-body");
+  if (!st.configured) {
+    body.innerHTML = `<p class="muted">Not configured. Set <code>TELEGRAM_BOT_TOKEN</code> and
+      <code>TELEGRAM_CHAT_ID</code> to receive the daily digest and use the command bot
+      (/today, /due, /find).</p>`;
+    return;
+  }
+  body.innerHTML = `
+    <p class="muted">Digest delivery is ${st.chat_id_set ? "enabled" : "missing a chat id"}. Commands: /today, /due, /find.</p>
+    <button class="btn primary" id="tg-test">Send test message</button>
+    <div id="tg-result" class="mt"></div>`;
+  $("#tg-test").addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
+    try { await api("/integrations/telegram/test", { method: "POST" }); toast("Sent — check Telegram"); }
+    catch (err) { toast(err.message, true); } btn.textContent = "Send test message";
   });
 }
 

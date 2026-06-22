@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     scraper_provider: str | None = None  # e.g. "scrapingbee"
     scraper_api_key: str | None = None
 
+    # AI sentiment scoring of synced interactions (emails/meetings/telegram)
+    sync_ai_sentiment: bool = True
+
+    # Chater importer (reuse the existing Telegram bot's database)
+    chater_database_url: str | None = None
+
+    # Telegram (digest delivery + lightweight command bot)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
@@ -55,6 +65,14 @@ class Settings(BaseSettings):
     @property
     def google_configured(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def chater_configured(self) -> bool:
+        return bool(self.chater_database_url)
+
+    @property
+    def telegram_configured(self) -> bool:
+        return bool(self.telegram_bot_token)
 
 
 @lru_cache
