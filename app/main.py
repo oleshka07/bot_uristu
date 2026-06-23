@@ -16,9 +16,13 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import settings
 from .database import init_db
-from .routers import ai, contacts, dashboard, imports, integrations
+from .routers import admin, ai, contacts, dashboard, imports, integrations
 
 logging.basicConfig(level=logging.INFO)
+
+from . import diagnostics  # noqa: E402
+
+diagnostics.install()
 
 app = FastAPI(
     title="Networking AI",
@@ -70,6 +74,7 @@ app.include_router(contacts.router)
 app.include_router(ai.router)
 app.include_router(imports.router)
 app.include_router(integrations.router)
+app.include_router(admin.router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

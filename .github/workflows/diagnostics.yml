@@ -1,0 +1,53 @@
+name: Diagnostics
+
+# On-demand server inspection. Runs read-only commands on the Hetzner box and
+# prints them to this run's log (which the assistant can read via the GitHub
+# API), so the running service can be diagnosed without interactive SSH.
+#
+# Trigger: Actions → Diagnostics → Run workflow (or via the API).
+# Uses the same secrets as the deploy workflow. Nothing is changed on the
+# server; secrets are not printed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      log_lines:
+        description: "How many web log lines to show"
+        required: false
+        default: "300"
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PATH,LOG_LINES
+          script: |
+            set +e
+            cd "$DEPLOY_PATH" || { echo "DEPLOY_PATH missing"; exit 1; }
+            echo "===== GIT (current commit) ====="
+            git log -1 --oneline
+            echo
+            echo "===== docker compose ps ====="
+            docker compose ps
+            echo
+            echo "===== HEALTH (localhost) ====="
+            curl -s --max-time 10 http://127.0.0.1:8002/api/health; echo
+            echo
+            echo "===== APP DIAGNOSTICS ====="
+            KEY=$(grep -E '^API_KEY=' .env | cut -d= -f2-)
+            [ -z "$KEY" ] && KEY=$(grep -E '^APP_PASSWORD=' .env | cut -d= -f2-)
+            curl -s --max-time 15 -H "X-API-Key: $KEY" \
+              http://127.0.0.1:8002/api/admin/diagnostics; echo
+            echo
+            echo "===== WEB LOGS (tail ${LOG_LINES}) ====="
+            docker compose logs --tail="${LOG_LINES}" --no-color web 2>&1 | tail -n "${LOG_LINES}"
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          LOG_LINES: ${{ github.event.inputs.log_lines }}
