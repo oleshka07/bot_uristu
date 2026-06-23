@@ -15,6 +15,10 @@ on:
         description: "How many web log lines to show"
         required: false
         default: "300"
+  # Periodic snapshot so a recent diagnostics run is always available to read.
+  # (Runs from the repository's default branch.)
+  schedule:
+    - cron: "*/30 * * * *"
 
 jobs:
   diagnostics:
@@ -30,6 +34,7 @@ jobs:
           envs: DEPLOY_PATH,LOG_LINES
           script: |
             set +e
+            LOG_LINES="${LOG_LINES:-300}"
             cd "$DEPLOY_PATH" || { echo "DEPLOY_PATH missing"; exit 1; }
             echo "===== GIT (current commit) ====="
             git log -1 --oneline

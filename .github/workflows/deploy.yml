@@ -53,6 +53,19 @@ jobs:
             fi
             docker compose up -d --build
             docker image prune -f
+            # Post-deploy diagnostics (printed for remote inspection; never fatal)
+            set +e
+            sleep 4
+            echo "===== docker compose ps ====="
+            docker compose ps
+            echo "===== HEALTH ====="
+            curl -s --max-time 10 http://127.0.0.1:8002/api/health; echo
+            echo "===== APP DIAGNOSTICS ====="
+            KEY=$(grep -E '^API_KEY=' .env | cut -d= -f2-)
+            [ -z "$KEY" ] && KEY=$(grep -E '^APP_PASSWORD=' .env | cut -d= -f2-)
+            curl -s --max-time 15 -H "X-API-Key: $KEY" http://127.0.0.1:8002/api/admin/diagnostics; echo
+            echo "===== web logs (tail 80) ====="
+            docker compose logs --tail=80 --no-color web 2>&1 | tail -n 80
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
