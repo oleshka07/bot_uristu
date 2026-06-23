@@ -84,6 +84,12 @@ def chater_import(
     return chater.import_data(db, message_limit=message_limit).as_dict()
 
 
+@router.post("/chater/dedupe")
+def chater_dedupe(db: Session = Depends(get_db)):
+    """Remove duplicate chater-imported contacts (keeps the richest copy)."""
+    return {"duplicates_removed": chater.dedupe(db)}
+
+
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
 

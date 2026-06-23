@@ -614,7 +614,8 @@ function renderChaterPanel(st) {
   body.innerHTML = `
     <p class="muted">Import contacts and Telegram message history from your Chater bot.</p>
     <div class="flex"><button class="btn" id="ch-inspect">Inspect (dry run)</button>
-      <button class="btn primary" id="ch-import">Import now</button></div>
+      <button class="btn primary" id="ch-import">Import now</button>
+      <button class="btn" id="ch-dedupe">Remove duplicates</button></div>
     <div id="ch-result" class="mt"></div>`;
   $("#ch-inspect").addEventListener("click", async (e) => {
     const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
@@ -628,9 +629,17 @@ function renderChaterPanel(st) {
     try {
       const r = await api("/integrations/chater/import", { method: "POST" });
       $("#ch-result").innerHTML = `<div class="ai-box">Created ${r.contacts_created} · updated ${r.contacts_updated} ·
-        ${r.interactions_added} interactions.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
+        ${r.interactions_added} interactions · removed ${r.duplicates_removed} duplicates.${r.errors.length ? "<br>⚠ " + r.errors.map(esc).join("<br>⚠ ") : ""}</div>`;
       toast("Chater import complete");
     } catch (err) { toast(err.message, true); } btn.textContent = "Import now";
+  });
+  $("#ch-dedupe").addEventListener("click", async (e) => {
+    const btn = e.target; btn.innerHTML = `<span class="spinner"></span>`;
+    try {
+      const r = await api("/integrations/chater/dedupe", { method: "POST" });
+      $("#ch-result").innerHTML = `<div class="ai-box">Removed ${r.duplicates_removed} duplicate contacts.</div>`;
+      toast("Duplicates removed");
+    } catch (err) { toast(err.message, true); } btn.textContent = "Remove duplicates";
   });
 }
 

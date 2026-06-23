@@ -21,6 +21,9 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "source": "VARCHAR(40) DEFAULT 'manual'",
         "external_id": "VARCHAR(200)",
     },
+    "contacts": {
+        "external_ref": "VARCHAR(120)",
+    },
 }
 
 

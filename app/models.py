@@ -148,6 +148,12 @@ class Contact(Base):
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Stable external identity for imported contacts (e.g. "chater:42"), used
+    # to de-duplicate on re-import even when there is no email/telegram.
+    external_ref: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, index=True
+    )
+
     # Derived relationship intelligence
     warmth_score: Mapped[float] = mapped_column(Float, default=50.0)
     warmth_status: Mapped[str] = mapped_column(String(20), default="warm")

@@ -50,6 +50,7 @@ class ImportReport:
     contacts_created: int = 0
     contacts_updated: int = 0
     interactions_added: int = 0
+    duplicates_removed: int = 0
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -209,6 +210,7 @@ def import_data(db: Session, message_limit: int = 200) -> ImportReport:
 
             contact = _find_or_create_contact(
                 db,
+                external_ref=f"chater:{cid}",
                 name=str(name),
                 last_name=str(row.get(col_last)) if col_last and row.get(col_last) else None,
                 company=str(row.get(col_company)) if col_company and row.get(col_company) else None,
@@ -233,6 +235,8 @@ def import_data(db: Session, message_limit: int = 200) -> ImportReport:
             db.rollback()
             report.errors.append(f"Contact import error: {exc}")
 
+    # Clean up any duplicates from earlier imports (idempotent).
+    report.duplicates_removed = dedupe(db)
     return report
 
 
@@ -247,6 +251,7 @@ def _first(d: dict, keys: list[str]):
 def _find_or_create_contact(
     db: Session,
     *,
+    external_ref: str,
     name: str,
     last_name: str | None,
     company: str | None,
@@ -257,17 +262,34 @@ def _find_or_create_contact(
     phone: str | None,
     report: ImportReport,
 ) -> models.Contact:
-    existing = None
-    if email:
+    parts = name.strip().split(" ", 1)
+    first = parts[0] or name
+    last = last_name or (parts[1] if len(parts) > 1 else None)
+
+    # Match priority: stable external_ref → email → telegram → (adopt an
+    # un-referenced chater contact by name). Each tier backfills external_ref
+    # so subsequent imports are fully idempotent, even with no email/telegram.
+    existing = db.scalar(
+        select(models.Contact).where(models.Contact.external_ref == external_ref)
+    )
+    if existing is None and email:
         existing = db.scalar(select(models.Contact).where(models.Contact.email == email))
     if existing is None and telegram:
         existing = db.scalar(
             select(models.Contact).where(models.Contact.telegram == telegram)
         )
-
-    parts = name.strip().split(" ", 1)
-    first = parts[0] or name
-    last = last_name or (parts[1] if len(parts) > 1 else None)
+    if existing is None:
+        existing = db.scalar(
+            select(models.Contact)
+            .join(models.Contact.tags)
+            .where(
+                models.Tag.name == "chater",
+                models.Contact.external_ref.is_(None),
+                models.Contact.first_name == first,
+                models.Contact.last_name.is_(last) if last is None
+                else models.Contact.last_name == last,
+            )
+        )
 
     bday = None
     if birthday:
@@ -277,6 +299,8 @@ def _find_or_create_contact(
             bday = None
 
     if existing:
+        if not existing.external_ref:
+            existing.external_ref = external_ref
         existing.telegram = existing.telegram or telegram
         existing.email = existing.email or email
         existing.phone = existing.phone or phone
@@ -287,6 +311,7 @@ def _find_or_create_contact(
         return existing
 
     contact = models.Contact(
+        external_ref=external_ref,
         first_name=first,
         last_name=last,
         relationship_type=models.Relationship.acquaintance,
@@ -303,6 +328,56 @@ def _find_or_create_contact(
     db.flush()
     report.contacts_created += 1
     return contact
+
+
+def dedupe(db: Session) -> int:
+    """Remove duplicate chater-imported contacts, keeping the richest copy
+    (most interactions, then lowest id). Returns how many were removed.
+
+    Grouping key: external_ref when set, else (telegram, email, name). Only
+    contacts tagged 'chater' are considered, so manual contacts are untouched.
+    """
+    chater_contacts = list(
+        db.scalars(
+            select(models.Contact)
+            .join(models.Contact.tags)
+            .where(models.Tag.name == "chater")
+        ).unique()
+    )
+
+    # Group by identity (not by external_ref) so that a legacy duplicate with
+    # no external_ref and a freshly-stamped copy of the same person collapse
+    # together. Same telegram/email ⇒ same person; same name with no
+    # telegram/email is indistinguishable to us, so treat as the same too.
+    groups: dict[tuple, list[models.Contact]] = {}
+    for c in chater_contacts:
+        key = (
+            (c.telegram or "").lower(),
+            (c.email or "").lower(),
+            c.first_name.lower(),
+            (c.last_name or "").lower(),
+        )
+        groups.setdefault(key, []).append(c)
+
+    removed = 0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda c: (len(c.interactions), -c.id), reverse=True)
+        keep = members[0]
+        if keep.external_ref is None:
+            # Prefer a ref-bearing duplicate to keep, if any.
+            for m in members:
+                if m.external_ref:
+                    keep = m
+                    break
+        for c in members:
+            if c.id != keep.id:
+                db.delete(c)
+                removed += 1
+    if removed:
+        db.commit()
+    return removed
 
 
 def _chater_tag(db: Session) -> list[models.Tag]:
