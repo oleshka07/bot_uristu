@@ -35,6 +35,7 @@ SCOPES = [
 ]
 
 PROVIDER = "google"
+PENDING_PROVIDER = "google_oauth_pending"  # holds the PKCE code_verifier
 
 
 @dataclass
@@ -65,9 +66,19 @@ def _get_token_row(db: Session) -> models.IntegrationToken | None:
 
 
 def _save_token(db: Session, token_json: str, account_email: str | None) -> None:
-    row = _get_token_row(db)
+    _save_token_row(db, PROVIDER, token_json, account_email)
+
+
+def _save_token_row(
+    db: Session, provider: str, token_json: str, account_email: str | None
+) -> None:
+    row = db.scalar(
+        select(models.IntegrationToken).where(
+            models.IntegrationToken.provider == provider
+        )
+    )
     if row is None:
-        row = models.IntegrationToken(provider=PROVIDER, token_json=token_json)
+        row = models.IntegrationToken(provider=provider, token_json=token_json)
         db.add(row)
     row.token_json = token_json
     if account_email:
@@ -109,7 +120,7 @@ def _client_config() -> dict:
     }
 
 
-def build_authorization_url() -> str:
+def build_authorization_url(db: Session) -> str:
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_config(_client_config(), scopes=SCOPES)
@@ -119,6 +130,12 @@ def build_authorization_url() -> str:
         include_granted_scopes="true",
         prompt="consent",  # force refresh_token on every connect
     )
+    # Newer google-auth-oauthlib enables PKCE by default: it puts a code
+    # challenge in the auth URL and expects the matching code_verifier at token
+    # exchange. The two steps are separate requests/objects, so persist it.
+    verifier = getattr(flow, "code_verifier", None)
+    if verifier:
+        _save_token_row(db, PENDING_PROVIDER, verifier, None)
     return url
 
 
@@ -127,11 +144,23 @@ def handle_oauth_callback(db: Session, code: str) -> str:
 
     flow = Flow.from_client_config(_client_config(), scopes=SCOPES)
     flow.redirect_uri = settings.google_redirect_uri
+
+    pending = db.scalar(
+        select(models.IntegrationToken).where(
+            models.IntegrationToken.provider == PENDING_PROVIDER
+        )
+    )
+    if pending:
+        flow.code_verifier = pending.token_json
+
     flow.fetch_token(code=code)
     creds = flow.credentials
 
     account_email = _fetch_account_email(creds)
     _save_token(db, creds.to_json(), account_email)
+    if pending:
+        db.delete(pending)
+        db.commit()
     return account_email or "(connected)"
 
 

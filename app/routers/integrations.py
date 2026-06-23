@@ -22,13 +22,13 @@ def google_status(db: Session = Depends(get_db)):
 
 
 @router.get("/google/authorize")
-def google_authorize():
+def google_authorize(db: Session = Depends(get_db)):
     if not settings.google_configured:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Google is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
         )
-    return RedirectResponse(google.build_authorization_url())
+    return RedirectResponse(google.build_authorization_url(db))
 
 
 @router.get("/google/callback")
