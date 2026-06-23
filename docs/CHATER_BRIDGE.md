@@ -24,29 +24,36 @@ Give this file to the Antigraviti agent — it adds a few lines to Chater.
 | `POST /api/maintenance/run-daily` | runs warmth refresh + Google sync | call before the digest for fresh data |
 | `GET /api/contacts?search=NAME` | contact list | `/find` style lookups |
 
-No auth (localhost-only binding). If you later expose it publicly, add a shared
-secret header — tell me and I'll add it.
+**Authentication:** once the public dashboard has `APP_PASSWORD` set, the API
+requires auth. Service callers like Chater send the header `X-API-Key: <key>`
+(the key is `API_KEY`, or `APP_PASSWORD` if `API_KEY` is unset). Add the same
+value to Chater's `.env` as `NETWORKING_API_KEY`. Open paths that never need
+auth: `/api/health` and `/api/integrations/google/callback`.
 
 ---
 
 ## Minimal change in Chater (TypeScript / grammY)
 
-Add a base URL to Chater's `.env`:
+Add to Chater's `.env`:
 ```
 NETWORKING_AI_URL=http://127.0.0.1:8002
+NETWORKING_API_KEY=        # same value as API_KEY (or APP_PASSWORD) in Networking AI
 ```
 
-A small helper:
+A small helper (sends the API key so it works once auth is enabled):
 ```ts
 // src/networking.ts
 const BASE = process.env.NETWORKING_AI_URL ?? "http://127.0.0.1:8002";
+const HEADERS = process.env.NETWORKING_API_KEY
+  ? { "X-API-Key": process.env.NETWORKING_API_KEY }
+  : {};
 
 export async function networkingDigest(): Promise<string> {
   // Optional: refresh data first (warmth + Google sync). Ignore failures.
   try {
-    await fetch(`${BASE}/api/maintenance/run-daily`, { method: "POST" });
+    await fetch(`${BASE}/api/maintenance/run-daily`, { method: "POST", headers: HEADERS });
   } catch (_) {}
-  const res = await fetch(`${BASE}/api/digest/text`);
+  const res = await fetch(`${BASE}/api/digest/text`, { headers: HEADERS });
   if (!res.ok) throw new Error(`Networking AI ${res.status}`);
   const data = await res.json();
   return data.text as string; // already HTML-formatted

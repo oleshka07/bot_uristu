@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./networking.db"
 
+    # Authentication (single-user). When app_password is set, the whole site +
+    # API require HTTP Basic auth; service-to-service callers (the Chater
+    # bridge) can instead send the X-API-Key header. Empty password = auth off.
+    app_username: str = "admin"
+    app_password: str | None = None
+    api_key: str | None = None  # defaults to app_password if unset
+
     # Behaviour
     daily_suggestions: int = 5
     upcoming_window_days: int = 14
@@ -69,6 +76,14 @@ class Settings(BaseSettings):
     @property
     def google_configured(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.app_password)
+
+    @property
+    def effective_api_key(self) -> str | None:
+        return self.api_key or self.app_password
 
     @property
     def chater_configured(self) -> bool:

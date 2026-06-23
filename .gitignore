@@ -23,3 +23,6 @@ networking.db
 
 # Logs
 *.log
+
+# Local compose overrides (server-specific; use the .example as a template)
+docker-compose.override.yml

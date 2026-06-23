@@ -1,0 +1,15 @@
+# Server-specific overrides — copy to docker-compose.override.yml (gitignored).
+#
+# Networking AI runs behind nginx on the Hetzner box, so the web container is
+# published only on localhost:8002. Keep that here instead of editing
+# docker-compose.yml, so `git pull` never conflicts.
+#
+# On the server, once:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+# Docker Compose auto-loads docker-compose.override.yml on every `up`.
+
+services:
+  web:
+    # !override replaces the base port list entirely (instead of appending).
+    ports: !override
+      - "127.0.0.1:8002:8000"

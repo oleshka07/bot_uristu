@@ -24,6 +24,9 @@ services:
       DATABASE_URL: postgresql+psycopg://networking:${POSTGRES_PASSWORD:-networking}@db:5432/networking
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-claude-opus-4-8}
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      API_KEY: ${API_KEY:-}
       DAILY_SUGGESTIONS: ${DAILY_SUGGESTIONS:-5}
       UPCOMING_WINDOW_DAYS: ${UPCOMING_WINDOW_DAYS:-14}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}

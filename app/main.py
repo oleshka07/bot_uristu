@@ -27,6 +27,10 @@ app = FastAPI(
     version=__version__,
 )
 
+from .auth import AuthMiddleware
+
+app.add_middleware(AuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

@@ -51,6 +51,12 @@ powered by Claude (`claude-opus-4-8`).
   deploy/config access without exposing secrets.
 - **`docs/CHATER_BRIDGE.md`** — single-bot setup: the existing Chater bot pulls
   `GET /api/digest/text` and serves networking commands (no second bot).
+- **`docs/PR_WORKFLOW.md`** — optional PR-mode + branch protection so changes
+  are reviewed before they auto-deploy.
+
+> **Public deployment?** Set `APP_PASSWORD` (and optionally `API_KEY`) so the
+> whole site + API require login. The Chater bridge authenticates with
+> `X-API-Key`. With `APP_PASSWORD` empty, auth is off (local dev only).
 
 ## Architecture
 
