@@ -11,7 +11,7 @@ import logging
 from . import crud, dashboard, telegram
 from .config import settings
 from .database import SessionLocal
-from .integrations import google
+from .integrations import chater, google
 
 logger = logging.getLogger("networking.daily")
 
@@ -63,6 +63,12 @@ def run_daily_job(send_digest: bool = True) -> dict:
     summary: dict = {"warmth_refreshed": 0, "sync": None, "digest_sent": False}
     try:
         summary["warmth_refreshed"] = crud.refresh_all_warmth(db)
+
+        # Self-healing: clean up any duplicate Chater-imported contacts.
+        try:
+            summary["duplicates_removed"] = chater.dedupe(db)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("daily dedupe failed: %s", exc)
 
         g_status = google.status(db)
         if g_status["connected"]:

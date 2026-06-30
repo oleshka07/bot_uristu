@@ -42,6 +42,16 @@ powered by Claude (`claude-opus-4-8`).
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+CI runs the suite on every push; the Hetzner deploy only happens if tests
+pass, so broken code never reaches production.
+
 ## Detailed guides
 
 - **`docs/SETUP_GOOGLE.md`** — click-by-click Google Cloud OAuth setup.

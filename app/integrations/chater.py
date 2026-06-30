@@ -330,27 +330,16 @@ def _find_or_create_contact(
     return contact
 
 
-def dedupe(db: Session) -> int:
-    """Remove duplicate chater-imported contacts, keeping the richest copy
-    (most interactions, then lowest id). Returns how many were removed.
-
-    Grouping key: external_ref when set, else (telegram, email, name). Only
-    contacts tagged 'chater' are considered, so manual contacts are untouched.
-    """
-    chater_contacts = list(
+def _identity_groups(db: Session) -> dict[tuple, list]:
+    contacts = list(
         db.scalars(
             select(models.Contact)
             .join(models.Contact.tags)
             .where(models.Tag.name == "chater")
         ).unique()
     )
-
-    # Group by identity (not by external_ref) so that a legacy duplicate with
-    # no external_ref and a freshly-stamped copy of the same person collapse
-    # together. Same telegram/email ⇒ same person; same name with no
-    # telegram/email is indistinguishable to us, so treat as the same too.
-    groups: dict[tuple, list[models.Contact]] = {}
-    for c in chater_contacts:
+    groups: dict[tuple, list] = {}
+    for c in contacts:
         key = (
             (c.telegram or "").lower(),
             (c.email or "").lower(),
@@ -358,6 +347,31 @@ def dedupe(db: Session) -> int:
             (c.last_name or "").lower(),
         )
         groups.setdefault(key, []).append(c)
+    return groups
+
+
+def duplicate_count(db: Session) -> dict:
+    """How many chater contacts are duplicates (for diagnostics)."""
+    try:
+        groups = _identity_groups(db)
+        extra = sum(len(m) - 1 for m in groups.values() if len(m) > 1)
+        return {"unique": len(groups), "duplicate_extras": extra}
+    except Exception as exc:  # pragma: no cover
+        return {"error": str(exc)}
+
+
+def dedupe(db: Session) -> int:
+    """Remove duplicate chater-imported contacts, keeping the richest copy
+    (most interactions, then lowest id). Returns how many were removed.
+
+    Grouping key: external_ref when set, else (telegram, email, name). Only
+    contacts tagged 'chater' are considered, so manual contacts are untouched.
+    """
+    # Group by identity (not by external_ref) so that a legacy duplicate with
+    # no external_ref and a freshly-stamped copy of the same person collapse
+    # together. Same telegram/email ⇒ same person; same name with no
+    # telegram/email is indistinguishable to us, so treat as the same too.
+    groups = _identity_groups(db)
 
     removed = 0
     for members in groups.values():

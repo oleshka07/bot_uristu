@@ -6,6 +6,7 @@ Serves the JSON API under /api and the single-page dashboard from /.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,22 +14,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, diagnostics
 from .config import settings
 from .database import init_db
 from .routers import admin, ai, contacts, dashboard, imports, integrations
 
 logging.basicConfig(level=logging.INFO)
-
-from . import diagnostics  # noqa: E402
-
 diagnostics.install()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    from . import scheduler
+
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
 
 app = FastAPI(
     title="Networking AI",
     description="Personal relationship intelligence — dossiers, warmth scoring "
     "and AI outreach recommendations.",
     version=__version__,
+    lifespan=lifespan,
 )
 
 from .auth import AuthMiddleware
@@ -42,21 +52,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
-    from . import scheduler
-
-    scheduler.start()
-
-
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-    from . import scheduler
-
-    scheduler.shutdown()
 
 
 @app.get("/api/health", tags=["meta"])

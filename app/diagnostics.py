@@ -84,7 +84,7 @@ def snapshot(db) -> dict:
         "database": db_info,
         "integrations": {
             "google": g_status,
-            "chater": chater.status(),
+            "chater": {**chater.status(), "contacts": chater.duplicate_count(db)},
             "telegram": {"configured": settings.telegram_configured},
         },
         "recent_warnings_errors": errors[-25:],
