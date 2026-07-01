@@ -6,7 +6,40 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import LifeEventStatus
+from .models import FactType, LifeEventStatus
+
+
+class ContactFactIn(BaseModel):
+    fact_type: FactType = FactType.other
+    value: str = Field(min_length=1, max_length=2000)
+    valid_from: date | None = None
+    valid_to: date | None = None
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    source: str = "manual"
+    source_ref: str | None = None
+
+
+class ContactFactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    contact_id: int
+    fact_type: FactType
+    value: str
+    valid_from: date | None
+    valid_to: date | None
+    invalid_at: datetime | None
+    confidence: float
+    source: str
+    source_ref: str | None
+    created_at: datetime
+    is_current: bool
+
+
+class ContactFactUpdate(BaseModel):
+    value: str | None = Field(default=None, min_length=1, max_length=2000)
+    fact_type: FactType | None = None
+    valid_to: date | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class LifeEventIn(BaseModel):

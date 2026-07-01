@@ -13,7 +13,12 @@ from app.modules.contacts.models import (  # noqa: F401
     Tag,
     contact_tags,
 )
-from app.modules.insights.models import LifeEvent, LifeEventStatus  # noqa: F401
+from app.modules.insights.models import (  # noqa: F401
+    ContactFact,
+    FactType,
+    LifeEvent,
+    LifeEventStatus,
+)
 from app.modules.integrations.models import IntegrationToken  # noqa: F401
 from app.modules.integrations.social.models import SocialSnapshot  # noqa: F401
 from app.modules.interactions.models import (  # noqa: F401

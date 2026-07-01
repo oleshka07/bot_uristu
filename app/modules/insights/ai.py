@@ -69,6 +69,12 @@ def _contact_context(contact: models.Contact) -> str:
     if contact.notes:
         lines.append(f"Notes: {contact.notes}")
 
+    current_facts = [f for f in getattr(contact, "facts", []) if f.is_current]
+    if current_facts:
+        lines.append("Known facts (current):")
+        for fct in current_facts[:20]:
+            lines.append(f"  - [{fct.fact_type.value}] {fct.value}")
+
     score, status = warmth.compute_warmth(contact)
     elapsed = round(warmth.days_since_last_contact(contact))
     lines.append(
@@ -316,6 +322,86 @@ def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> s
     except Exception as exc:  # pragma: no cover
         logger.warning("suggest_event_message failed: %s", exc)
         return _fallback_event_message(contact, event)
+
+
+_FACTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fact_type": {
+                        "type": "string",
+                        "enum": [
+                            "role",
+                            "employer",
+                            "location",
+                            "interest",
+                            "family",
+                            "relationship",
+                            "preference",
+                            "other",
+                        ],
+                    },
+                    "value": {"type": "string"},
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                    },
+                },
+                "required": ["fact_type", "value", "confidence"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["facts"],
+    "additionalProperties": False,
+}
+
+
+def extract_facts(contact: models.Contact) -> list[dict]:
+    """Read everything known about a contact and extract durable facts.
+
+    Returns a list of {fact_type, value, confidence}. Only facts clearly
+    supported by the data are returned; empty on any error or when AI is off.
+    This is the consolidation step: episodic history → semantic facts.
+    """
+    client = _get_client()
+    if client is None:
+        return []
+
+    system = (
+        "You extract durable, stable facts about a person from a relationship "
+        "CRM record — role, employer, location, interests, family, key "
+        "relationships and communication preferences. Only report facts clearly "
+        "supported by the data. Each fact must be a short, standalone statement "
+        "(e.g. 'Works at Acme as CTO', 'Lives in Berlin', 'Into trail running'). "
+        "Do not invent anything. Respond with JSON only."
+    )
+    prompt = (
+        "From the contact record below, extract the stable facts worth "
+        "remembering long-term. Skip transient chatter and one-off events.\n\n"
+        f"{_contact_context(contact)}"
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=1500,
+            thinking={"type": "adaptive"},
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={
+                "format": {"type": "json_schema", "schema": _FACTS_SCHEMA}
+            },
+        )
+        data = _extract_json(resp)
+        if isinstance(data, dict) and isinstance(data.get("facts"), list):
+            return [f for f in data["facts"] if f.get("value")]
+    except Exception as exc:  # pragma: no cover
+        logger.warning("extract_facts failed: %s", exc)
+    return []
 
 
 _EVENTS_SCHEMA = {

@@ -147,6 +147,12 @@ class Contact(Base):
         order_by="SocialSnapshot.fetched_at.desc()",
         lazy="selectin",
     )
+    facts: Mapped[list["ContactFact"]] = relationship(  # noqa: F821
+        back_populates="contact",
+        cascade="all, delete-orphan",
+        order_by="ContactFact.created_at.desc()",
+        lazy="selectin",
+    )
 
     @property
     def full_name(self) -> str:

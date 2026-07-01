@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.modules.insights.ai import (
     detect_life_events,
+    extract_facts,
     generate_dossier,
     recommend_outreach,
     score_sentiments,
@@ -20,4 +21,5 @@ __all__ = [
     "score_sentiments",
     "suggest_event_message",
     "detect_life_events",
+    "extract_facts",
 ]

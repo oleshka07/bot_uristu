@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.modules.insights.schemas import LifeEventOut
+from app.modules.insights.schemas import ContactFactOut, LifeEventOut
 from app.modules.integrations.social.schemas import SocialSnapshotOut
 from app.modules.interactions.schemas import InteractionOut
 
@@ -128,6 +128,7 @@ class ContactDetail(ContactBase):
     interactions: list[InteractionOut] = Field(default_factory=list)
     life_events: list[LifeEventOut] = Field(default_factory=list)
     social_snapshots: list[SocialSnapshotOut] = Field(default_factory=list)
+    facts: list[ContactFactOut] = Field(default_factory=list)
     days_since_contact: int = 0
     is_due: bool = False
 
@@ -153,6 +154,11 @@ class ContactDetail(ContactBase):
             life_events=[LifeEventOut.model_validate(e) for e in c.life_events],
             social_snapshots=[
                 SocialSnapshotOut.model_validate(s) for s in c.social_snapshots
+            ],
+            facts=[
+                ContactFactOut.model_validate(f)
+                for f in c.facts
+                if f.is_current
             ],
             days_since_contact=round(warmth.days_since_last_contact(c)),
             is_due=warmth.is_due(c),

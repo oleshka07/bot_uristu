@@ -23,6 +23,9 @@ from app.modules.dashboard.schemas import (
     UpcomingDate,
 )
 from app.modules.insights.schemas import (
+    ContactFactIn,
+    ContactFactOut,
+    ContactFactUpdate,
     LifeEventIn,
     LifeEventOut,
     LifeEventUpdate,
@@ -40,6 +43,9 @@ __all__ = [
     "KeyDateOut",
     "InteractionIn",
     "InteractionOut",
+    "ContactFactIn",
+    "ContactFactOut",
+    "ContactFactUpdate",
     "LifeEventIn",
     "LifeEventOut",
     "LifeEventUpdate",

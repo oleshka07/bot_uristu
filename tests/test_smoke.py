@@ -8,6 +8,7 @@ breaks a relationship fails in CI before it can deploy.
 from sqlalchemy.orm import configure_mappers
 
 EXPECTED_TABLES = {
+    "contact_facts",
     "contact_tags",
     "contacts",
     "integration_tokens",
@@ -40,12 +41,17 @@ EXPECTED_ROUTES = {
     ("GET", "/api/tags"),
     ("PATCH", "/api/contacts/{contact_id}"),
     ("PATCH", "/api/life-events/{event_id}"),
+    ("GET", "/api/contacts/{contact_id}/facts"),
     ("POST", "/api/contacts"),
     ("POST", "/api/contacts/{contact_id}/dossier"),
+    ("POST", "/api/contacts/{contact_id}/facts"),
+    ("POST", "/api/contacts/{contact_id}/facts/extract"),
     ("POST", "/api/contacts/{contact_id}/import"),
     ("POST", "/api/contacts/{contact_id}/interactions"),
     ("POST", "/api/contacts/{contact_id}/key-dates"),
     ("POST", "/api/contacts/{contact_id}/life-events"),
+    ("PATCH", "/api/facts/{fact_id}"),
+    ("POST", "/api/facts/{fact_id}/invalidate"),
     ("POST", "/api/integrations/chater/dedupe"),
     ("POST", "/api/integrations/chater/import"),
     ("POST", "/api/integrations/google/disconnect"),
