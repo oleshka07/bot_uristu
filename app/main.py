@@ -31,7 +31,7 @@ diagnostics.install()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    from . import scheduler
+    from .modules.automation import scheduler
 
     scheduler.start()
     yield
