@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _reset_schema():
-    from app.database import Base, engine
-    import app.models  # noqa: F401
+    from app.core.database import Base, engine
+    from app.core import registry  # noqa: F401  (registers every ORM model)
 
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)

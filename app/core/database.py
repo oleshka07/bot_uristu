@@ -45,7 +45,7 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     """Create all tables, then reconcile columns added in later versions."""
-    import app.models  # noqa: F401  (ensures every ORM model is registered)
+    from app.core import registry  # noqa: F401  (registers every ORM model)
     from .migrations import ensure_schema
 
     Base.metadata.create_all(bind=engine)
