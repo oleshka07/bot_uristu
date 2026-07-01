@@ -17,7 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__, diagnostics
 from .config import settings
 from .database import init_db
-from .routers import admin, ai, contacts, dashboard, imports, integrations
+from .modules.admin.router import router as admin_router
+from .modules.contacts.router import router as contacts_router
+from .modules.dashboard.router import router as dashboard_router
+from .modules.insights.router import router as insights_router
+from .modules.integrations.router import router as integrations_router
+from .modules.integrations.social.router import router as imports_router
 
 logging.basicConfig(level=logging.INFO)
 diagnostics.install()
@@ -64,12 +69,12 @@ def health() -> dict:
 
 
 # API routers
-app.include_router(dashboard.router)
-app.include_router(contacts.router)
-app.include_router(ai.router)
-app.include_router(imports.router)
-app.include_router(integrations.router)
-app.include_router(admin.router)
+app.include_router(dashboard_router)
+app.include_router(contacts_router)
+app.include_router(insights_router)
+app.include_router(imports_router)
+app.include_router(integrations_router)
+app.include_router(admin_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

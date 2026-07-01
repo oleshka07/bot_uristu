@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import ai, crud, schemas
-from ..config import settings
-from ..database import get_db
+from app import ai, crud, schemas
+from app.core.config import settings
+from app.core.database import get_db
 
 router = APIRouter(prefix="/api", tags=["ai"])
 

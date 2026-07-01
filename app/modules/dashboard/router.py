@@ -5,8 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from .. import crud, daily, dashboard, schemas
-from ..database import get_db
+from app import crud, daily, dashboard, schemas
+from app.core.database import get_db
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -23,7 +23,7 @@ def digest_text(db: Session = Depends(get_db)):
     This is the bridge for the Chater bot: it fetches this and forwards it to
     Telegram with parse_mode=HTML, so everything lives in a single bot.
     """
-    from .. import telegram
+    from app import telegram
 
     data = dashboard.build_dashboard(db)
     return {"text": telegram.digest_text(data), "parse_mode": "HTML"}

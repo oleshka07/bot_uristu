@@ -10,8 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from .. import diagnostics
-from ..database import get_db
+from app import diagnostics
+from app.core.database import get_db
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 

@@ -6,8 +6,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import ai, crud, schemas, social
-from ..database import get_db
+from app import ai, crud, schemas, social
+from app.core.database import get_db
 
 router = APIRouter(prefix="/api", tags=["import"])
 

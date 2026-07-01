@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..config import settings
-from ..database import get_db
-from ..integrations import chater, google
+from app.core.config import settings
+from app.core.database import get_db
+from app.integrations import chater, google
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
@@ -103,7 +103,7 @@ def telegram_status():
 
 @router.post("/telegram/test")
 def telegram_test():
-    from .. import telegram
+    from app import telegram
 
     ok = telegram.send_message("✅ Networking AI is connected to Telegram.")
     if not ok:
