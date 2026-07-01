@@ -4,6 +4,7 @@ const API = "/api";
 const RELATIONSHIPS = ["family","friend","colleague","client","partner","mentor","investor","acquaintance","other"];
 const FREQUENCIES = ["weekly","biweekly","monthly","quarterly","biannual","yearly"];
 const CHANNELS = ["call","message","email","meeting","social","event","other"];
+const FACT_TYPES = ["role","employer","location","interest","family","relationship","preference","other"];
 
 const state = { view: "dashboard", aiEnabled: false };
 
@@ -230,7 +231,7 @@ async function openContactDetail(id, tab = "overview") {
   let c;
   try { c = await api(`/contacts/${id}`); } catch (e) { return showError(e); }
 
-  const tabs = ["overview", "interactions", "events", "social"];
+  const tabs = ["overview", "facts", "interactions", "events", "social"];
   const tabBtns = tabs.map((t) =>
     `<button class="tab ${t === tab ? "active" : ""}" data-tab="${t}">${titleCase(t)}</button>`).join("");
 
@@ -307,6 +308,28 @@ function renderTab(c, tab) {
       ${c.notes ? `<div class="field-row"><span class="k">Notes</span><span style="max-width:60%;text-align:right">${esc(c.notes)}</span></div>` : ""}
       ${c.key_dates.length ? `<h3 class="section-title mt">Key dates</h3>${c.key_dates.map((k) => `<div class="field-row"><span class="k">${esc(k.label)}</span><span>${k.date}</span></div>`).join("")}` : ""}
     </div>`;
+  } else if (tab === "facts") {
+    const facts = c.facts || [];
+    const rows = facts.map((f) => `
+      <div class="timeline-item flex between" style="align-items:flex-start">
+        <div>
+          <span class="pill accent">${esc(titleCase(f.fact_type))}</span>
+          <span>${esc(f.value)}</span>
+          <small class="muted"> · ${esc(f.source)}${f.confidence != null ? " · " + Math.round(f.confidence * 100) + "%" : ""}</small>
+        </div>
+        <button class="btn small danger" data-factdel="${f.id}" title="No longer true">✕</button>
+      </div>`).join("");
+    body.innerHTML = `
+      <div class="flex mb" style="gap:6px">
+        <button class="btn primary small" id="extract-facts">✦ Extract facts (AI)</button>
+        <button class="btn small" id="add-fact">+ Add fact</button>
+      </div>
+      ${facts.length ? `<div class="card">${rows}</div>`
+        : `<div class="empty">No facts yet. Add one, or let AI extract them from the history.</div>`}`;
+    $("#extract-facts").addEventListener("click", () => extractFacts(c.id));
+    $("#add-fact").addEventListener("click", () => openFactForm(c.id));
+    body.querySelectorAll("[data-factdel]").forEach((b) =>
+      b.addEventListener("click", () => invalidateFact(c.id, Number(b.dataset.factdel))));
   } else if (tab === "interactions") {
     body.innerHTML = c.interactions.length
       ? `<div class="card">${c.interactions.map((i) => `
@@ -407,6 +430,46 @@ async function markEvent(contactId, eventId) {
     await api(`/life-events/${eventId}`, { method: "PATCH", body: JSON.stringify({ status: "acted" }) });
     openContactDetail(contactId, "events");
   } catch (e) { toast(e.message, true); }
+}
+
+async function extractFacts(contactId) {
+  const btn = $("#extract-facts");
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Extracting…`; }
+  try {
+    const saved = await api(`/contacts/${contactId}/facts/extract`, { method: "POST" });
+    toast(saved.length ? `Added ${saved.length} fact${saved.length === 1 ? "" : "s"}` : "No new facts found");
+    openContactDetail(contactId, "facts");
+  } catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = "✦ Extract facts (AI)"; } }
+}
+
+async function invalidateFact(contactId, factId) {
+  try {
+    await api(`/facts/${factId}/invalidate`, { method: "POST" });
+    openContactDetail(contactId, "facts");
+  } catch (e) { toast(e.message, true); }
+}
+
+function openFactForm(contactId) {
+  openModal(`
+    <h3>Add fact</h3>
+    <form id="fact-form">
+      <div class="form-grid">
+        <label>Type<select name="fact_type">${FACT_TYPES.map((t) => `<option value="${t}">${titleCase(t)}</option>`).join("")}</select></label>
+        <label class="form-full">Fact<input name="value" required placeholder="e.g. Works at Acme as CTO" /></label>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Add</button></div>
+    </form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#fact-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = { fact_type: fd.get("fact_type"), value: fd.get("value"), source: "manual" };
+    try {
+      await api(`/contacts/${contactId}/facts`, { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast("Fact added"); openContactDetail(contactId, "facts");
+    } catch (err) { toast(err.message, true); }
+  });
 }
 
 /* ── Forms ─────────────────────────────────────────────────────────────── */
