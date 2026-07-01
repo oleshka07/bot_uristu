@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
+
+
+def utcnow() -> datetime:
+    """Timezone-aware UTC now — shared default for model timestamp columns."""
+    return datetime.now(timezone.utc)
 
 # SQLite needs a special flag for multithreaded use (uvicorn workers/threads).
 connect_args = {}
