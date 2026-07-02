@@ -39,6 +39,7 @@ BACKFILL_CAP_PER_CONTACT = 500
 class ExportReport:
     chats_seen: int = 0
     chats_matched: int = 0
+    contacts_created: int = 0
     style_contacts: int = 0
     interactions_added: int = 0
     my_messages_sampled: int = 0
@@ -117,8 +118,16 @@ def _existing_near(db: Session, contact_id: int, dt: datetime) -> bool:
     )
 
 
+_BOTISH = {"telegram", "telegram notifications", "spambot"}
+
+
+def _looks_like_bot(name: str) -> bool:
+    n = (name or "").strip().casefold()
+    return not n or n in _BOTISH or n.endswith("bot")
+
+
 def import_export(
-    db: Session, path: str, *, backfill: bool = True
+    db: Session, path: str, *, backfill: bool = True, create_missing: bool = False
 ) -> ExportReport:
     from app.modules.interactions import service as interactions_service
 
@@ -136,14 +145,12 @@ def import_export(
             continue
         report.chats_seen += 1
         try:
-            contact = _match_contact(db, chat)
-            if contact is None:
-                continue
-            report.chats_matched += 1
             chat_id = chat.get("id")
 
+            # Pre-parse messages once: we need to know whether the owner
+            # ever wrote here before deciding to auto-create a contact.
+            parsed = []
             my_texts: list[str] = []
-            added = 0
             for m in chat.get("messages", []):
                 if m.get("type") != "message":
                     continue
@@ -151,12 +158,47 @@ def import_export(
                 if not text:
                     continue
                 dt = _msg_dt(m)
-                sender = str(m.get("from_id") or "")
-                is_mine = sender != f"user{chat_id}"
-
+                is_mine = str(m.get("from_id") or "") != f"user{chat_id}"
+                parsed.append((m, text, dt, is_mine))
                 if is_mine and 15 <= len(text) <= 400:
                     my_texts.append(text)
 
+            contact = _match_contact(db, chat)
+            if contact is None:
+                # Auto-create people the owner actually wrote to (filters
+                # out bots/service chats and one-way spam automatically).
+                if (
+                    not create_missing
+                    or not my_texts
+                    or _looks_like_bot(chat.get("name"))
+                ):
+                    continue
+                name = (chat.get("name") or "").strip()
+                first, _, last = name.partition(" ")
+                contact = models.Contact(
+                    first_name=first or "Unknown",
+                    last_name=last.strip() or None,
+                    telegram_chat_id=chat_id,
+                    relationship_type=models.Relationship.acquaintance,
+                    # Softer default cadence for the unfiltered bulk — the
+                    # user triages these gradually (stop-list / edit).
+                    contact_frequency=models.Frequency.quarterly,
+                )
+                tag = db.scalar(
+                    select(models.Tag).where(models.Tag.name == "tg-export")
+                )
+                if tag is None:
+                    tag = models.Tag(name="tg-export")
+                    db.add(tag)
+                    db.flush()
+                contact.tags = [tag]
+                db.add(contact)
+                db.flush()
+                report.contacts_created += 1
+            report.chats_matched += 1
+
+            added = 0
+            for m, text, dt, is_mine in parsed:
                 if backfill and dt is not None and added < BACKFILL_CAP_PER_CONTACT:
                     ext = f"tgx:{chat_id}:{m.get('id')}"
                     if interactions_service.interaction_exists(db, contact.id, ext):

@@ -142,3 +142,46 @@ def test_match_by_name_backfills_chat_id(client, tmp_path):
         c = db.get(Contact, cid)
         assert c.telegram_chat_id == 5003  # backfilled → Business proxy works
         assert c.style_examples  # my message captured as style example
+
+
+def test_create_all_adds_people_i_wrote_to(client, tmp_path):
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.contacts.models import Contact
+    from app.modules.integrations.tgexport.importer import import_export
+
+    with SessionLocal() as db:
+        export = _write_export(
+            tmp_path,
+            [
+                # I wrote to this person → contact created with history.
+                _chat(
+                    8001,
+                    "Нова Людина",
+                    [
+                        _msg(1, 8001, "Привіт, ти з конференції?", 20),
+                        _msg(2, 99, "Так, я! Радий знайомству, наберу завтра", 19),
+                    ],
+                ),
+                # Bot chat → never auto-created.
+                _chat(8002, "SomeServiceBot", [_msg(3, 99, "Старт бота і команди тут", 5)]),
+                # One-way spam (I never replied) → skipped.
+                _chat(8003, "Спамер", [_msg(4, 8003, "Купіть наші курси зі знижкою", 5)]),
+            ],
+        )
+        report = import_export(db, export, backfill=True, create_missing=True)
+        assert report.contacts_created == 1
+        assert report.interactions_added == 2
+
+        c = db.scalar(select(Contact).where(Contact.telegram_chat_id == 8001))
+        assert c is not None
+        assert c.full_name == "Нова Людина"
+        assert c.contact_frequency.value == "quarterly"
+        assert "tg-export" in [t.name for t in c.tags]
+        assert db.scalar(select(Contact).where(Contact.telegram_chat_id == 8002)) is None
+        assert db.scalar(select(Contact).where(Contact.telegram_chat_id == 8003)) is None
+
+        # Idempotent: run again → matches, creates nothing new.
+        report2 = import_export(db, export, backfill=True, create_missing=True)
+        assert report2.contacts_created == 0
+        assert report2.interactions_added == 0
