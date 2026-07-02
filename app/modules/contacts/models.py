@@ -116,6 +116,10 @@ class Contact(Base):
     # Stop-list: one-off contacts the outreach queue must never suggest.
     do_not_contact: Mapped[bool] = mapped_column(default=False)
 
+    # JSON array of the owner's real recent messages TO this person
+    # (from the Telegram export) — few-shot style examples for drafts.
+    style_examples: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Social links
     instagram_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
     facebook_url: Mapped[str | None] = mapped_column(String(300), nullable=True)

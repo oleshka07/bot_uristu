@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "key_dates",
     "life_events",
     "social_snapshots",
+    "style_profile",
     "tags",
     "telegram_drafts",
 }

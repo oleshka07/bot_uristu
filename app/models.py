@@ -18,6 +18,7 @@ from app.modules.insights.models import (  # noqa: F401
     FactType,
     LifeEvent,
     LifeEventStatus,
+    StyleProfile,
 )
 from app.modules.integrations.models import IntegrationToken  # noqa: F401
 from app.modules.integrations.social.models import SocialSnapshot  # noqa: F401

@@ -326,6 +326,61 @@ def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> s
         return _fallback_event_message(contact, event)
 
 
+def build_style_card(sample: list[str]) -> str | None:
+    """Distill the owner's writing style from a sample of their real
+    messages into a compact style card for draft prompts."""
+    client = _get_client()
+    if client is None or not sample:
+        return None
+    joined = "\n".join(f"- {s}" for s in sample[:300])
+    system = (
+        "Ти аналізуєш стиль письма людини за її реальними повідомленнями. "
+        "Опиши компактно (до 250 слів, маркованим списком): мови і коли яку "
+        "вживає; довжина й ритм речень; привітання/прощання; емодзі та "
+        "пунктуація; тон (формальність, гумор); улюблені слова й фрази; "
+        "чого НЕ робить. Пиши українською, це інструкція для копірайтера, "
+        "який писатиме від її імені."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=1200,
+            thinking={"type": "adaptive"},
+            system=system,
+            messages=[{"role": "user", "content": f"Повідомлення:\n{joined}"}],
+        )
+        return _extract_text(resp) or None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("build_style_card failed: %s", exc)
+        return None
+
+
+def _style_context(contact: models.Contact) -> str:
+    """The owner's voice: global style card + real examples to THIS person."""
+    import json as _json
+
+    from sqlalchemy.orm import object_session
+
+    parts: list[str] = []
+    session = object_session(contact)
+    if session is not None:
+        profile = session.get(models.StyleProfile, 1)
+        if profile is not None:
+            parts.append(f"Стиль Степана (з його реальних повідомлень):\n{profile.summary_md}")
+    if contact.style_examples:
+        try:
+            examples = _json.loads(contact.style_examples)[-6:]
+            if examples:
+                parts.append(
+                    "Реальні повідомлення Степана САМЕ ЦІЙ людині "
+                    "(наслідуй їх найбільше):\n"
+                    + "\n".join(f"- {e}" for e in examples)
+                )
+        except (ValueError, TypeError):
+            pass
+    return "\n\n".join(parts)
+
+
 def _dialogue_history(contact: models.Contact, limit: int = 12) -> str:
     """Recent message exchange with this contact, oldest first, labeled by
     speaker — the raw material for mimicking the user's own voice."""
@@ -362,9 +417,11 @@ def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
         "месенджерна мова. Відповідай МОВОЮ співрозмовника. Верни ЛИШЕ текст "
         "повідомлення, без лапок і пояснень."
     )
+    style = _style_context(contact)
     prompt = (
         f"{_contact_context(contact)}\n\n"
-        f"Історія листування:\n{_dialogue_history(contact)}\n\n"
+        + (f"{style}\n\n" if style else "")
+        + f"Історія листування:\n{_dialogue_history(contact)}\n\n"
         f"Нове повідомлення від {contact.first_name}:\n«{incoming_text}»\n\n"
         "Напиши відповідь від Степана."
     )
@@ -401,9 +458,11 @@ def draft_outreach(contact: models.Contact, reason: str) -> str | None:
         "(подія, факт) — обіграй його. Відповідай мовою, якою вони "
         "листувалися. Верни ЛИШЕ текст повідомлення."
     )
+    style = _style_context(contact)
     prompt = (
         f"{_contact_context(contact)}\n\n"
-        f"Історія листування:\n{_dialogue_history(contact)}\n\n"
+        + (f"{style}\n\n" if style else "")
+        + f"Історія листування:\n{_dialogue_history(contact)}\n\n"
         f"Привід написати зараз: {reason}\n\n"
         f"Напиши повідомлення від Степана до {contact.first_name}."
     )

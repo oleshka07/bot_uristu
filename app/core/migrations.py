@@ -26,6 +26,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "telegram_chat_id": "BIGINT",
         "tone": "VARCHAR(80)",
         "do_not_contact": "BOOLEAN DEFAULT FALSE",
+        "style_examples": "TEXT",
     },
 }
 

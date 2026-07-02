@@ -62,6 +62,21 @@ class LifeEvent(Base):
     contact: Mapped["Contact"] = relationship(back_populates="life_events")  # noqa: F821
 
 
+class StyleProfile(Base):
+    """The owner's global communication style, distilled from their real
+    Telegram history (export import). A single row (id=1); its summary is
+    injected into every draft prompt so messages sound like the owner."""
+
+    __tablename__ = "style_profile"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    summary_md: Mapped[str] = mapped_column(Text)
+    sample_count: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class ContactFact(Base):
     """A durable, queryable fact about a contact with a validity window.
 
