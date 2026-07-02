@@ -401,6 +401,8 @@ def upcoming_events(
         return []
     now = datetime.now(timezone.utc)
     try:
+        from googleapiclient.discovery import build
+
         calendar = build("calendar", "v3", credentials=creds, cache_discovery=False)
         resp = (
             calendar.events()
