@@ -23,6 +23,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     },
     "contacts": {
         "external_ref": "VARCHAR(120)",
+        "telegram_chat_id": "BIGINT",
+        "tone": "VARCHAR(80)",
     },
 }
 

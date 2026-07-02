@@ -66,6 +66,8 @@ def _contact_context(contact: models.Contact) -> str:
 
     if contact.tags:
         lines.append("Tags: " + ", ".join(t.name for t in contact.tags))
+    if contact.tone:
+        lines.append(f"Preferred communication tone: {contact.tone}")
     if contact.notes:
         lines.append(f"Notes: {contact.notes}")
 
@@ -322,6 +324,97 @@ def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> s
     except Exception as exc:  # pragma: no cover
         logger.warning("suggest_event_message failed: %s", exc)
         return _fallback_event_message(contact, event)
+
+
+def _dialogue_history(contact: models.Contact, limit: int = 12) -> str:
+    """Recent message exchange with this contact, oldest first, labeled by
+    speaker — the raw material for mimicking the user's own voice."""
+    msgs = [
+        i
+        for i in contact.interactions
+        if i.channel == models.Channel.message and i.summary
+    ][:limit]
+    if not msgs:
+        return "(немає історії листування)"
+    lines = []
+    for i in reversed(msgs):  # interactions are newest-first on the model
+        who = "Я" if i.direction == models.Direction.outbound else contact.first_name
+        when = i.occurred_at.strftime("%d.%m")
+        lines.append(f"[{when}] {who}: {i.summary}")
+    return "\n".join(lines)
+
+
+def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
+    """Draft a reply to an incoming Telegram DM, in the user's own voice.
+
+    Returns None when AI is unavailable or fails — the caller then shows the
+    incoming message to the admin without a draft (never a canned reply).
+    """
+    client = _get_client()
+    if client is None:
+        return None
+
+    system = (
+        "Ти пишеш відповіді в Telegram ВІД ІМЕНІ користувача (Степана). "
+        "Пиши так, як пише він сам — уважно дивись на його попередні репліки "
+        "в історії та копіюй його стиль, лексику, довжину речень і емодзі. "
+        "1–3 речення, без формальних привітань і підписів, природна "
+        "месенджерна мова. Відповідай МОВОЮ співрозмовника. Верни ЛИШЕ текст "
+        "повідомлення, без лапок і пояснень."
+    )
+    prompt = (
+        f"{_contact_context(contact)}\n\n"
+        f"Історія листування:\n{_dialogue_history(contact)}\n\n"
+        f"Нове повідомлення від {contact.first_name}:\n«{incoming_text}»\n\n"
+        "Напиши відповідь від Степана."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=600,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = _extract_text(resp).strip().strip('"«»')
+        return text or None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("draft_reply failed: %s", exc)
+        return None
+
+
+def refine_reply(
+    contact: models.Contact, current_draft: str, instruction: str
+) -> str | None:
+    """Rewrite a drafted message according to the user's instruction
+    (typed or transcribed from a voice note)."""
+    client = _get_client()
+    if client is None:
+        return None
+
+    system = (
+        "Ти редагуєш чернетку Telegram-повідомлення від імені користувача "
+        "(Степана). Збережи його стиль — коротко, природно, месенджерно. "
+        "Верни ЛИШЕ фінальний текст повідомлення, без лапок і пояснень."
+    )
+    prompt = (
+        f"Кому: {contact.full_name}"
+        + (f" (тон: {contact.tone})" if contact.tone else "")
+        + f"\n\nПоточна чернетка:\n«{current_draft}»\n\n"
+        f"Інструкція від Степана: {instruction}\n\n"
+        "Перепиши чернетку згідно з інструкцією."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=600,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = _extract_text(resp).strip().strip('"«»')
+        return text or None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("refine_reply failed: %s", exc)
+        return None
 
 
 _FACTS_SCHEMA = {

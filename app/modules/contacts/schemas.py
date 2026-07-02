@@ -45,6 +45,7 @@ class ContactBase(BaseModel):
     github_url: str | None = None
     website_url: str | None = None
     notes: str | None = None
+    tone: str | None = Field(default=None, max_length=80)
 
 
 class ContactCreate(ContactBase):
@@ -74,6 +75,7 @@ class ContactUpdate(BaseModel):
     github_url: str | None = None
     website_url: str | None = None
     notes: str | None = None
+    tone: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = None
 
 
@@ -116,6 +118,7 @@ class ContactDetail(ContactBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     full_name: str
+    telegram_chat_id: int | None = None
     created_at: datetime
     updated_at: datetime
     warmth_score: float
@@ -141,6 +144,7 @@ class ContactDetail(ContactBase):
             **data,
             id=c.id,
             full_name=c.full_name,
+            telegram_chat_id=c.telegram_chat_id,
             created_at=c.created_at,
             updated_at=c.updated_at,
             warmth_score=c.warmth_score,

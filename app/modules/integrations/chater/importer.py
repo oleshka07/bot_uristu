@@ -35,7 +35,11 @@ _C = {
     "last_name": ["last_name", "surname"],
     "company": ["company", "organization", "org", "workplace"],
     "birthday": ["birthday", "birth_date", "dob", "birthdate"],
-    "notes": ["notes", "note", "summary", "dossier", "description", "bio"],
+    "notes": ["notes", "note", "description", "bio"],
+    "tone": ["tone"],
+    "ai_summary": ["ai_summary", "summary", "dossier"],
+    "tg_chat_id": ["telegram_chat_id", "chat_id", "tg_chat_id"],
+    "tg_username": ["telegram_username", "username"],
     "ch_type": ["type", "channel", "kind", "platform", "channel_type"],
     "ch_value": ["value", "address", "identifier", "username", "handle", "contact_value"],
     "msg_text": ["text", "content", "body", "message", "message_text"],
@@ -122,7 +126,11 @@ def inspect() -> dict:
 
     return {
         "tables": tables,
-        "contacts": mapping(contacts_t, ["name", "last_name", "company", "birthday", "notes"]),
+        "contacts": mapping(
+            contacts_t,
+            ["name", "last_name", "company", "birthday", "notes",
+             "tone", "ai_summary", "tg_chat_id", "tg_username"],
+        ),
         "channels": mapping(channels_t, ["contact_id", "ch_type", "ch_value"]),
         "messages": mapping(messages_t, ["contact_id", "msg_text", "msg_time", "msg_id", "msg_dir"]),
     }
@@ -172,6 +180,10 @@ def import_data(db: Session, message_limit: int = 200) -> ImportReport:
     col_company = _pick(c_cols, "company")
     col_bday = _pick(c_cols, "birthday")
     col_notes = _pick(c_cols, "notes")
+    col_tone = _pick(c_cols, "tone")
+    col_summary = _pick(c_cols, "ai_summary")
+    col_tg_chat = _pick(c_cols, "tg_chat_id")
+    col_tg_user = _pick(c_cols, "tg_username")
     pk = "id" if "id" in [c.lower() for c in c_cols] else (c_cols[0] if c_cols else "id")
 
     # Channels indexed by contact id.
@@ -208,6 +220,8 @@ def import_data(db: Session, message_limit: int = 200) -> ImportReport:
             email = _first(chans, ["email", "mail"])
             phone = _first(chans, ["phone", "tel", "mobile"])
 
+            if not telegram and col_tg_user and row.get(col_tg_user):
+                telegram = row.get(col_tg_user)
             contact = _find_or_create_contact(
                 db,
                 external_ref=f"chater:{cid}",
@@ -221,6 +235,19 @@ def import_data(db: Session, message_limit: int = 200) -> ImportReport:
                 phone=str(phone) if phone else None,
                 report=report,
             )
+
+            # Business-proxy essentials carried over from Chater: the numeric
+            # chat id (message matching), preferred tone (draft style) and
+            # the AI summary (seed dossier if we don't have one yet).
+            if col_tg_chat and row.get(col_tg_chat) and not contact.telegram_chat_id:
+                try:
+                    contact.telegram_chat_id = int(row[col_tg_chat])
+                except (TypeError, ValueError):
+                    pass
+            if col_tone and row.get(col_tone) and not contact.tone:
+                contact.tone = str(row[col_tone])[:80]
+            if col_summary and row.get(col_summary) and not contact.ai_dossier:
+                contact.ai_dossier = str(row[col_summary])
 
             if messages_t:
                 added = _import_messages(

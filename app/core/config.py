@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     ai_model: str = "claude-opus-4-8"
 
+    # Voice transcription for Telegram voice notes (Whisper first, Gemini
+    # fallback — same providers/keys Chater used, so the keys carry over).
+    openai_api_key: str | None = None
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.0-flash"
+
     # Database
     database_url: str = "sqlite:///./networking.db"
 

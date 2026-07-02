@@ -26,3 +26,9 @@ from app.modules.interactions.models import (  # noqa: F401
     Direction,
     Interaction,
 )
+from app.modules.telegram_bot.models import (  # noqa: F401
+    BusinessConnection,
+    DraftKind,
+    DraftStatus,
+    TelegramDraft,
+)

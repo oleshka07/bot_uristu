@@ -10,7 +10,18 @@ from __future__ import annotations
 import enum
 from datetime import date, datetime
 
-from sqlalchemy import Column, Date, DateTime, Enum, Float, ForeignKey, String, Table, Text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, utcnow
@@ -91,6 +102,16 @@ class Contact(Base):
     whatsapp: Mapped[str | None] = mapped_column(String(60), nullable=True)
     telegram: Mapped[str | None] = mapped_column(String(120), nullable=True)
     viber: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
+    # Telegram numeric chat id — the stable key the Business proxy uses to
+    # match an incoming DM to a contact (usernames change, ids don't).
+    telegram_chat_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+
+    # Preferred communication tone with this person (e.g. "дружній",
+    # "діловий") — steers AI reply drafts. Imported from Chater.
+    tone: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     # Social links
     instagram_url: Mapped[str | None] = mapped_column(String(300), nullable=True)

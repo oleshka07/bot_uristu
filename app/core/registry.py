@@ -16,6 +16,7 @@ from app.modules.insights import models as insights_models  # noqa: F401
 from app.modules.integrations import models as integrations_models  # noqa: F401
 from app.modules.integrations.social import models as social_models  # noqa: F401
 from app.modules.interactions import models as interactions_models  # noqa: F401
+from app.modules.telegram_bot import models as telegram_bot_models  # noqa: F401
 
 __all__ = [
     "contacts_models",
@@ -23,4 +24,5 @@ __all__ = [
     "insights_models",
     "integrations_models",
     "social_models",
+    "telegram_bot_models",
 ]
