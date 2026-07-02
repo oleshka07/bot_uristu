@@ -156,3 +156,124 @@ def test_digest_command_has_queue_button(client, monkeypatch):
     digest = fake.sent[-1]
     kb = digest.get("reply_markup") or {}
     assert kb.get("inline_keyboard", [[]])[0][0]["callback_data"] == "q:start"
+
+
+def test_stop_list_button_excludes_contact_and_advances(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.contacts.models import Contact
+    from app.modules.telegram_bot.models import TelegramDraft
+
+    with SessionLocal() as db:
+        _seed_connection(db)
+        cid = _seed_due_contact(db, "Odnorazovyi", 551, days_ago=300)
+
+    fake = FakeClient()
+    dispatch(fake, {"update_id": 1, "callback_query": {"id": "cb", "data": "q:start"}})
+
+    with SessionLocal() as db:
+        d = db.scalar(select(TelegramDraft))
+        d_id, d_admin = d.id, d.admin_message_id
+
+    dispatch(
+        fake,
+        {
+            "update_id": 2,
+            "callback_query": {
+                "id": "cb2",
+                "data": f"d:x:{d_id}",
+                "message": {"chat": {"id": 42}, "message_id": d_admin, "text": "card"},
+            },
+        },
+    )
+
+    with SessionLocal() as db:
+        c = db.get(Contact, cid)
+        assert c.do_not_contact is True
+        # Queue advanced and, with nobody left, reported it's done.
+        assert "Черга на сьогодні порожня" in fake.sent[-1]["text"]
+        # Stop-listed contact never reappears in the queue.
+        from app.modules.telegram_bot import service as svc
+
+        assert svc.next_outreach_contact(db) is None
+
+
+def test_contacts_button_lists_channels_with_copyable_draft(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.contacts.models import Contact
+    from app.modules.telegram_bot.models import TelegramDraft
+    from app.modules.telegram_bot import service as svc
+
+    with SessionLocal() as db:
+        _seed_connection(db)
+        cid = _seed_due_contact(db, "Multi", 661, days_ago=90)
+        c = db.get(Contact, cid)
+        c.email = "multi@example.com"
+        c.instagram_url = "https://instagram.com/multi"
+        db.commit()
+
+    fake = FakeClient()
+    dispatch(fake, {"update_id": 1, "callback_query": {"id": "cb", "data": "q:start"}})
+
+    with SessionLocal() as db:
+        d = db.scalar(select(TelegramDraft))
+        svc.update_draft_text(db, d, "Привіт!")
+        d_id = d.id
+
+    dispatch(
+        fake,
+        {
+            "update_id": 2,
+            "callback_query": {"id": "cb2", "data": f"d:c:{d_id}", "message": {}},
+        },
+    )
+    channels = fake.sent[-1]["text"]
+    assert "multi@example.com" in channels
+    assert "instagram.com/multi" in channels
+    assert "<code>Привіт!</code>" in channels
+
+    # The card is still pending — contacts view is informational.
+    with SessionLocal() as db:
+        d = db.get(TelegramDraft, d_id)
+        assert d.status == DraftStatus.pending
+
+
+def test_translate_without_ai_keeps_draft(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.telegram_bot.models import TelegramDraft
+    from app.modules.telegram_bot import service as svc
+
+    with SessionLocal() as db:
+        _seed_connection(db)
+        _seed_due_contact(db, "Lang", 662, days_ago=90)
+
+    fake = FakeClient()
+    dispatch(fake, {"update_id": 1, "callback_query": {"id": "cb", "data": "q:start"}})
+
+    with SessionLocal() as db:
+        d = db.scalar(select(TelegramDraft))
+        svc.update_draft_text(db, d, "Оригінал")
+        d_id = d.id
+
+    dispatch(
+        fake,
+        {
+            "update_id": 2,
+            "callback_query": {"id": "cb2", "data": f"d:t:{d_id}:en", "message": {}},
+        },
+    )
+    # No ANTHROPIC key in tests → translation fails gracefully, draft intact.
+    assert "Не вдалося перекласти" in fake.callbacks
+    with SessionLocal() as db:
+        assert db.get(TelegramDraft, d_id).draft_text == "Оригінал"

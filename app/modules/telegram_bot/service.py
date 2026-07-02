@@ -273,7 +273,10 @@ def next_outreach_contact(db: Session) -> Contact | None:
     candidates = [
         c
         for c in db.scalars(
-            select(Contact).where(Contact.telegram_chat_id.is_not(None))
+            select(Contact).where(
+                Contact.telegram_chat_id.is_not(None),
+                Contact.do_not_contact.is_(False),
+            )
         ).unique()
         if c.id not in drafted_today and warmth.is_due(c)
     ]
@@ -281,6 +284,13 @@ def next_outreach_contact(db: Session) -> Contact | None:
         return None
     candidates.sort(key=warmth.overdue_ratio, reverse=True)
     return candidates[0]
+
+
+def stop_list(db: Session, contact: Contact) -> None:
+    """Add to the stop-list: never suggested by the queue/digest again
+    (reversible from the web UI — the do_not_contact flag on the contact)."""
+    contact.do_not_contact = True
+    db.commit()
 
 
 def create_outreach_draft(

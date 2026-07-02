@@ -497,6 +497,12 @@ function openContactForm(c = null) {
         <label>Instagram URL<input name="instagram_url" value="${v("instagram_url")}" /></label>
         <label>Facebook URL<input name="facebook_url" value="${v("facebook_url")}" /></label>
         <label>Twitter/X URL<input name="twitter_url" value="${v("twitter_url")}" /></label>
+        <label>Тон спілкування<input name="tone" value="${v("tone")}" placeholder="дружній / діловий" /></label>
+        <label>Стоп-лист
+          <select name="do_not_contact">
+            <option value="false" ${c?.do_not_contact ? "" : "selected"}>Ні — пропонувати</option>
+            <option value="true" ${c?.do_not_contact ? "selected" : ""}>Так — не пропонувати</option>
+          </select></label>
         <label class="form-full">Tags (comma separated)<input name="tags" value="${c ? c.tags.map(esc).join(", ") : ""}" /></label>
         <label class="form-full">Notes<textarea name="notes" rows="3">${v("notes")}</textarea></label>
       </div>
@@ -512,6 +518,7 @@ function openContactForm(c = null) {
     const body = {};
     for (const [k, val] of fd.entries()) {
       if (k === "tags") body.tags = val.split(",").map((s) => s.trim()).filter(Boolean);
+      else if (k === "do_not_contact") body.do_not_contact = val === "true";
       else if (val === "") body[k] = null;
       else body[k] = val;
     }

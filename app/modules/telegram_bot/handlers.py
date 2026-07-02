@@ -35,18 +35,77 @@ def _admin_id() -> int | None:
 # ── Preview rendering ────────────────────────────────────────────────────────
 
 
-def _draft_keyboard(draft_id: int, has_draft: bool) -> dict:
-    row = []
+def _draft_keyboard(draft_id: int, has_draft: bool, outreach: bool = False) -> dict:
+    row1 = []
     if has_draft:
-        row.append({"text": "✅ Надіслати", "callback_data": f"d:s:{draft_id}"})
-    row.append({"text": "✋ Вручну", "callback_data": f"d:m:{draft_id}"})
-    row.append({"text": "⏭ Пропустити", "callback_data": f"d:k:{draft_id}"})
-    return {"inline_keyboard": [row]}
+        row1.append({"text": "✅ Надіслати", "callback_data": f"d:s:{draft_id}"})
+    row1.append({"text": "✋ Вручну", "callback_data": f"d:m:{draft_id}"})
+    row1.append({"text": "⏭ Пропустити", "callback_data": f"d:k:{draft_id}"})
+    row2 = []
+    if has_draft:
+        row2.append({"text": "🌐 Переклад", "callback_data": f"d:t:{draft_id}"})
+    row2.append({"text": "📇 Контакти", "callback_data": f"d:c:{draft_id}"})
+    if outreach:
+        row2.append({"text": "🚫 Стоп-лист", "callback_data": f"d:x:{draft_id}"})
+    return {"inline_keyboard": [row1, row2] if row2 else [row1]}
+
+
+def _translate_keyboard(draft_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🇬🇧 EN", "callback_data": f"d:t:{draft_id}:en"},
+                {"text": "🇨🇿 CS", "callback_data": f"d:t:{draft_id}:cs"},
+                {"text": "🇷🇺 RU", "callback_data": f"d:t:{draft_id}:ru"},
+                {"text": "🇺🇦 UK", "callback_data": f"d:t:{draft_id}:uk"},
+                {"text": "↩", "callback_data": f"d:t:{draft_id}:back"},
+            ]
+        ]
+    }
+
+
+def _contact_link(contact) -> str:
+    """Clickable name that opens the person's profile/chat in Telegram."""
+    name = _esc(contact.full_name)
+    if contact.telegram_chat_id:
+        return f'<a href="tg://user?id={contact.telegram_chat_id}">{name}</a>'
+    return name
+
+
+def _channels_text(contact, draft_text: str) -> str:
+    """All known channels for reaching this person elsewhere + the draft in
+    a tap-to-copy block."""
+    lines = [f"📇 <b>{_esc(contact.full_name)} — канали</b>", ""]
+    pairs = [
+        ("Telegram", contact.telegram),
+        ("Телефон", contact.phone),
+        ("Email", contact.email),
+        ("WhatsApp", contact.whatsapp),
+        ("Viber", contact.viber),
+        ("Instagram", contact.instagram_url),
+        ("LinkedIn", contact.linkedin_url),
+        ("Facebook", contact.facebook_url),
+        ("Twitter/X", contact.twitter_url),
+        ("YouTube", contact.youtube_url),
+        ("GitHub", contact.github_url),
+        ("Сайт", contact.website_url),
+    ]
+    known = [(k, v) for k, v in pairs if v]
+    if known:
+        for k, v in known:
+            lines.append(f"• {k}: {_esc(str(v))}")
+    else:
+        lines.append("<i>Інших каналів не знаю — додай у веб-інтерфейсі.</i>")
+    if draft_text.strip():
+        lines.append("")
+        lines.append("Повідомлення (тапни, щоб скопіювати):")
+        lines.append(f"<code>{_esc(draft_text)}</code>")
+    return "\n".join(lines)
 
 
 def _outreach_card(contact, draft) -> str:
     """Queue card: who, why now, last touch, facts — then the draft."""
-    head = f"👤 <b>{_esc(contact.full_name)}</b>"
+    head = f"👤 <b>{_contact_link(contact)}</b>"
     if contact.telegram:
         head += f" ({_esc(contact.telegram)})"
     head += (
@@ -121,7 +180,9 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
     sent = client.send_message(
         admin,
         _outreach_card(contact, draft),
-        reply_markup=_draft_keyboard(draft.id, bool(draft.draft_text.strip())),
+        reply_markup=_draft_keyboard(
+            draft.id, bool(draft.draft_text.strip()), outreach=True
+        ),
     )
     if sent:
         service.set_admin_message(db, draft, sent.get("message_id", 0))
@@ -129,7 +190,7 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
 
 
 def _preview_text(contact, draft, is_new: bool) -> str:
-    head = f"👤 <b>{_esc(contact.full_name)}</b>"
+    head = f"👤 <b>{_contact_link(contact)}</b>"
     if contact.telegram:
         head += f" ({_esc(contact.telegram)})"
     if is_new:
@@ -251,9 +312,11 @@ def handle_callback(client, cb: dict) -> None:
         client.answer_callback(cb_id)
         return
     try:
-        _, action, raw_id = data.split(":", 2)
-        draft_id = int(raw_id)
-    except ValueError:
+        parts = data.split(":")
+        action = parts[1]
+        draft_id = int(parts[2])
+        arg = parts[3] if len(parts) > 3 else None
+    except (ValueError, IndexError):
         client.answer_callback(cb_id)
         return
 
@@ -266,6 +329,69 @@ def handle_callback(client, cb: dict) -> None:
 
         is_outreach = draft.kind == DraftKind.outreach
         handled = False
+
+        # ── Non-terminal actions (the card stays pending) ────────────────
+        if action == "c":
+            contact = db.get(Contact, draft.contact_id)
+            client.answer_callback(cb_id)
+            if contact and admin:
+                client.send_message(admin, _channels_text(contact, draft.draft_text))
+            return
+        if action == "t":
+            contact = db.get(Contact, draft.contact_id)
+            if arg is None:
+                client.answer_callback(cb_id, "Обери мову")
+                if msg:
+                    client.edit_message_text(
+                        msg["chat"]["id"],
+                        msg["message_id"],
+                        _render_draft(contact, draft),
+                        reply_markup=_translate_keyboard(draft.id),
+                    )
+                return
+            kb = _draft_keyboard(draft.id, True, outreach=is_outreach)
+            if arg == "back":
+                client.answer_callback(cb_id)
+                if msg:
+                    client.edit_message_text(
+                        msg["chat"]["id"],
+                        msg["message_id"],
+                        _render_draft(contact, draft),
+                        reply_markup=kb,
+                    )
+                return
+            from app.modules.insights import ai as _ai
+
+            translated = _ai.translate_message(draft.draft_text, arg)
+            if translated is None:
+                client.answer_callback(cb_id, "Не вдалося перекласти")
+                return
+            service.update_draft_text(db, draft, translated)
+            client.answer_callback(cb_id, "Перекладено")
+            if msg:
+                client.edit_message_text(
+                    msg["chat"]["id"],
+                    msg["message_id"],
+                    _render_draft(contact, draft),
+                    reply_markup=kb,
+                )
+            return
+        if action == "x":
+            contact = db.get(Contact, draft.contact_id)
+            if contact:
+                service.stop_list(db, contact)
+            service.mark(db, draft, DraftStatus.skipped)
+            client.answer_callback(cb_id, "У стоп-листі 🚫")
+            if msg:
+                client.edit_message_text(
+                    msg["chat"]["id"],
+                    msg["message_id"],
+                    (msg.get("text") or "") + "\n\n🚫 <b>У стоп-листі</b> "
+                    "(повернути можна у веб-інтерфейсі)",
+                )
+            if is_outreach and admin:
+                _send_next_outreach_card(client, db, admin)
+            return
 
         if action == "s":
             ok = service.approve_and_send(db, client, draft)
@@ -341,17 +467,20 @@ def handle_admin_message(client, msg: dict) -> None:
                 client.send_message(admin, "Не вдалося переписати чернетку.")
                 return
             contact = db.get(Contact, draft.contact_id)
+            from .models import DraftKind as _DK
+
+            kb = _draft_keyboard(draft.id, True, outreach=draft.kind == _DK.outreach)
             edited = client.edit_message_text(
                 admin,
                 reply_to,
                 _render_draft(contact, draft),
-                reply_markup=_draft_keyboard(draft.id, True),
+                reply_markup=kb,
             )
             if not edited:
                 sent = client.send_message(
                     admin,
                     _render_draft(contact, draft),
-                    reply_markup=_draft_keyboard(draft.id, True),
+                    reply_markup=kb,
                 )
                 if sent:
                     service.set_admin_message(db, draft, sent.get("message_id", 0))

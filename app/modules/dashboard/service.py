@@ -37,7 +37,7 @@ def build_dashboard(db: Session) -> schemas.Dashboard:
     buckets = {"hot": 0, "warm": 0, "cooling": 0, "cold": 0}
     for c in contacts:
         buckets[c.warmth_status] = buckets.get(c.warmth_status, 0) + 1
-    due_now = sum(1 for c in contacts if warmth.is_due(c))
+    due_now = sum(1 for c in contacts if warmth.is_due(c) and not c.do_not_contact)
 
     pending_events_q = (
         select(models.LifeEvent)
@@ -58,7 +58,7 @@ def build_dashboard(db: Session) -> schemas.Dashboard:
     )
 
     # ── Daily suggestions: most overdue, weighted by how cold they are ───
-    due = [c for c in contacts if warmth.is_due(c)]
+    due = [c for c in contacts if warmth.is_due(c) and not c.do_not_contact]
     due.sort(key=lambda c: (warmth.overdue_ratio(c), 100 - c.warmth_score), reverse=True)
     suggestions: list[schemas.SuggestedContact] = []
     for c in due[: settings.daily_suggestions]:

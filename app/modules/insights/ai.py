@@ -421,6 +421,46 @@ def draft_outreach(contact: models.Contact, reason: str) -> str | None:
         return None
 
 
+_TRANSLATE_LANGS = {
+    "en": "англійську",
+    "cs": "чеську",
+    "ru": "російську",
+    "uk": "українську",
+}
+
+
+def translate_message(text: str, lang: str) -> str | None:
+    """Translate a drafted messenger message, preserving its casual tone,
+    emoji and length. Returns None when AI is unavailable or fails."""
+    client = _get_client()
+    if client is None or not text.strip():
+        return None
+    language = _TRANSLATE_LANGS.get(lang, lang)
+
+    system = (
+        "Ти перекладаєш коротке месенджерне повідомлення. Збережи неформальний "
+        "тон, емодзі та довжину — це має звучати природно для носія мови, а не "
+        "як машинний переклад. Верни ЛИШЕ перекладений текст."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=600,
+            system=system,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Переклади на {language}:\n\n{text}",
+                }
+            ],
+        )
+        out = _extract_text(resp).strip().strip('"«»')
+        return out or None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("translate_message failed: %s", exc)
+        return None
+
+
 def refine_reply(
     contact: models.Contact, current_draft: str, instruction: str
 ) -> str | None:

@@ -46,6 +46,7 @@ class ContactBase(BaseModel):
     website_url: str | None = None
     notes: str | None = None
     tone: str | None = Field(default=None, max_length=80)
+    do_not_contact: bool = False
 
 
 class ContactCreate(ContactBase):
@@ -76,6 +77,7 @@ class ContactUpdate(BaseModel):
     website_url: str | None = None
     notes: str | None = None
     tone: str | None = Field(default=None, max_length=80)
+    do_not_contact: bool | None = None
     tags: list[str] | None = None
 
 

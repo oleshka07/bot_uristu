@@ -113,6 +113,9 @@ class Contact(Base):
     # "діловий") — steers AI reply drafts. Imported from Chater.
     tone: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
+    # Stop-list: one-off contacts the outreach queue must never suggest.
+    do_not_contact: Mapped[bool] = mapped_column(default=False)
+
     # Social links
     instagram_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
     facebook_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
