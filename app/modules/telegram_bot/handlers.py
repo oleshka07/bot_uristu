@@ -44,6 +44,90 @@ def _draft_keyboard(draft_id: int, has_draft: bool) -> dict:
     return {"inline_keyboard": [row]}
 
 
+def _outreach_card(contact, draft) -> str:
+    """Queue card: who, why now, last touch, facts — then the draft."""
+    head = f"👤 <b>{_esc(contact.full_name)}</b>"
+    if contact.telegram:
+        head += f" ({_esc(contact.telegram)})"
+    head += (
+        f" · {_esc(contact.relationship_type.value)}"
+        f" · {_esc(contact.warmth_status)} {round(contact.warmth_score)}"
+    )
+    lines = [head, "", f"📊 <b>Чому зараз:</b> {_esc(draft.incoming_text)}"]
+
+    last = next((i for i in contact.interactions if i.summary), None)
+    if last:
+        when = last.occurred_at.strftime("%d.%m.%Y")
+        lines.append(f"🕓 <b>Останнє:</b> {when} — {_esc(last.summary[:160])}")
+
+    facts = [f for f in getattr(contact, "facts", []) if f.is_current][:3]
+    if facts:
+        lines.append("💡 " + "; ".join(_esc(f.value) for f in facts))
+
+    lines.append("")
+    if draft.draft_text.strip():
+        lines.append(f"✍️ <b>Чернетка:</b>\n{_esc(draft.draft_text)}")
+        lines.append("")
+        lines.append("<i>Reply текстом/голосом — скоригую чернетку.</i>")
+    else:
+        lines.append("<i>Чернетки немає (AI недоступний) — напиши сам або пропусти.</i>")
+    return "\n".join(lines)
+
+
+def _render_draft(contact, draft, is_new: bool = False) -> str:
+    from .models import DraftKind
+
+    if draft.kind == DraftKind.outreach:
+        return _outreach_card(contact, draft)
+    return _preview_text(contact, draft, is_new)
+
+
+def _send_next_outreach_card(client, db, admin: int) -> bool:
+    """Advance the queue: draft the next due contact and send its card.
+    Returns False when the queue is empty (and tells the admin)."""
+    connection = service.get_enabled_connection(db)
+    if connection is None:
+        client.send_message(
+            admin,
+            "Ще не бачу Business-з'єднання. Воно підхопиться саме собою з "
+            "першим вхідним повідомленням — або перемкни бота в "
+            "Налаштування → Telegram Business → Чат-боти (вимкнути/увімкнути).",
+        )
+        return False
+    contact = service.next_outreach_contact(db)
+    if contact is None:
+        from datetime import datetime, timezone
+
+        from app.modules.telegram_bot.models import DraftKind, DraftStatus, TelegramDraft
+        from sqlalchemy import func, select
+
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        sent = db.scalar(
+            select(func.count(TelegramDraft.id)).where(
+                TelegramDraft.kind == DraftKind.outreach,
+                TelegramDraft.created_at >= today_start,
+                TelegramDraft.status == DraftStatus.sent,
+            )
+        )
+        client.send_message(
+            admin,
+            f"🎉 Черга на сьогодні порожня. Надіслано: {sent or 0}. "
+            "Всі, хто був прострочений і доступний у Telegram, опрацьовані.",
+        )
+        return False
+    draft = service.create_outreach_draft(db, contact, connection)
+    sent = client.send_message(
+        admin,
+        _outreach_card(contact, draft),
+        reply_markup=_draft_keyboard(draft.id, bool(draft.draft_text.strip())),
+    )
+    if sent:
+        service.set_admin_message(db, draft, sent.get("message_id", 0))
+    return True
+
+
 def _preview_text(contact, draft, is_new: bool) -> str:
     head = f"👤 <b>{_esc(contact.full_name)}</b>"
     if contact.telegram:
@@ -154,6 +238,15 @@ def handle_callback(client, cb: dict) -> None:
     data = cb.get("data") or ""
     cb_id = cb.get("id", "")
     msg = cb.get("message") or {}
+    admin = _admin_id()
+
+    if data == "q:start":
+        client.answer_callback(cb_id, "Починаю обхід")
+        if admin:
+            with SessionLocal() as db:
+                _send_next_outreach_card(client, db, admin)
+        return
+
     if not data.startswith("d:"):
         client.answer_callback(cb_id)
         return
@@ -169,6 +262,10 @@ def handle_callback(client, cb: dict) -> None:
         if draft is None or draft.status != DraftStatus.pending:
             client.answer_callback(cb_id, "Уже неактуально")
             return
+        from .models import DraftKind
+
+        is_outreach = draft.kind == DraftKind.outreach
+        handled = False
 
         if action == "s":
             ok = service.approve_and_send(db, client, draft)
@@ -179,6 +276,7 @@ def handle_callback(client, cb: dict) -> None:
                     msg["message_id"],
                     (msg.get("text") or "") + "\n\n✅ <b>Надіслано</b>",
                 )
+            handled = ok
         elif action == "m":
             service.mark(db, draft, DraftStatus.manual)
             client.answer_callback(cb_id, "Ок, відповідай сам")
@@ -188,6 +286,7 @@ def handle_callback(client, cb: dict) -> None:
                     msg["message_id"],
                     (msg.get("text") or "") + "\n\n✋ <b>Вручну</b>",
                 )
+            handled = True
         elif action == "k":
             service.mark(db, draft, DraftStatus.skipped)
             client.answer_callback(cb_id, "Пропущено")
@@ -197,8 +296,13 @@ def handle_callback(client, cb: dict) -> None:
                     msg["message_id"],
                     (msg.get("text") or "") + "\n\n⏭ <b>Пропущено</b>",
                 )
+            handled = True
         else:
             client.answer_callback(cb_id)
+
+        # The outreach queue flows card-to-card: any decision advances it.
+        if is_outreach and handled and admin:
+            _send_next_outreach_card(client, db, admin)
 
 
 def handle_admin_message(client, msg: dict) -> None:
@@ -240,13 +344,13 @@ def handle_admin_message(client, msg: dict) -> None:
             edited = client.edit_message_text(
                 admin,
                 reply_to,
-                _preview_text(contact, draft, False),
+                _render_draft(contact, draft),
                 reply_markup=_draft_keyboard(draft.id, True),
             )
             if not edited:
                 sent = client.send_message(
                     admin,
-                    _preview_text(contact, draft, False),
+                    _render_draft(contact, draft),
                     reply_markup=_draft_keyboard(draft.id, True),
                 )
                 if sent:
@@ -269,14 +373,25 @@ def _handle_command(client, admin: int, text: str) -> None:
             client.send_message(
                 admin,
                 "<b>Networking AI</b>\n"
-                "/today — кому написати сьогодні\n"
+                "/queue — почати обхід (кому написати, з чернетками)\n"
+                "/today — дайджест дня\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук контакту\n\n"
                 "Вхідні з Telegram Business приходять сюди з чернеткою "
                 "відповіді: ✅ надіслати · reply — скоригувати.",
             )
+        elif cmd == "queue":
+            _send_next_outreach_card(client, db, admin)
         elif cmd in ("today", "network", "digest"):
-            client.send_message(admin, tg.digest_text(dashboard.build_dashboard(db)))
+            client.send_message(
+                admin,
+                tg.digest_text(dashboard.build_dashboard(db)),
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "🚀 Почати обхід", "callback_data": "q:start"}]
+                    ]
+                },
+            )
         elif cmd == "due":
             contacts = [c for c in crud.list_contacts(db, sort="due") if warmth.is_due(c)]
             if not contacts:

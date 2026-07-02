@@ -98,7 +98,12 @@ def run_daily_job(send_digest: bool = True) -> dict:
             # Telegram digest (independent of email).
             if settings.telegram_configured and settings.telegram_chat_id:
                 summary["telegram_sent"] = telegram.send_message(
-                    telegram.digest_text(data)
+                    telegram.digest_text(data),
+                    reply_markup={
+                        "inline_keyboard": [
+                            [{"text": "🚀 Почати обхід", "callback_data": "q:start"}]
+                        ]
+                    },
                 )
         logger.info("Daily job finished: %s", summary)
     finally:

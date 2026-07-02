@@ -40,17 +40,21 @@ def _call(method: str, **payload):
         return None
 
 
-def send_message(text: str, chat_id: str | None = None) -> bool:
+def send_message(
+    text: str, chat_id: str | None = None, reply_markup: dict | None = None
+) -> bool:
     chat = chat_id or settings.telegram_chat_id
     if not (settings.telegram_bot_token and chat):
         return False
-    data = _call(
-        "sendMessage",
+    payload = dict(
         chat_id=chat,
         text=text,
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    data = _call("sendMessage", **payload)
     return bool(data and data.get("ok"))
 
 

@@ -225,3 +225,78 @@ def reformulate(
     if new_text:
         update_draft_text(db, draft, new_text)
     return new_text
+
+
+# ── Outreach queue ───────────────────────────────────────────────────────────
+
+
+def get_enabled_connection(db: Session) -> BusinessConnection | None:
+    """The user's Telegram Business connection (needed to send as the user)."""
+    return db.scalar(
+        select(BusinessConnection)
+        .where(BusinessConnection.is_enabled.is_(True))
+        .order_by(BusinessConnection.updated_at.desc())
+    )
+
+
+def outreach_reason(contact: Contact) -> str:
+    elapsed = round(warmth.days_since_last_contact(contact))
+    target = warmth.target_days(contact.contact_frequency)
+    overdue = max(elapsed - target, 0)
+    reason = (
+        f"{elapsed} днів без контакту при цілі «{contact.contact_frequency.value}»"
+        + (f" — прострочено на {overdue} дн." if overdue else "")
+    )
+    fresh_events = [
+        e for e in contact.life_events if e.status.value == "new"
+    ]
+    if fresh_events:
+        reason += f" Свіжий привід: {fresh_events[0].title}."
+    return reason
+
+
+def next_outreach_contact(db: Session) -> Contact | None:
+    """The most overdue due-contact that (a) is reachable in Telegram and
+    (b) has no outreach draft yet today — so /queue never repeats a person
+    within a day, whatever the user decided about them."""
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    drafted_today = set(
+        db.scalars(
+            select(TelegramDraft.contact_id).where(
+                TelegramDraft.kind == DraftKind.outreach,
+                TelegramDraft.created_at >= today_start,
+            )
+        )
+    )
+    candidates = [
+        c
+        for c in db.scalars(
+            select(Contact).where(Contact.telegram_chat_id.is_not(None))
+        ).unique()
+        if c.id not in drafted_today and warmth.is_due(c)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=warmth.overdue_ratio, reverse=True)
+    return candidates[0]
+
+
+def create_outreach_draft(
+    db: Session, contact: Contact, connection: BusinessConnection
+) -> TelegramDraft:
+    reason = outreach_reason(contact)
+    draft = TelegramDraft(
+        contact_id=contact.id,
+        chat_id=contact.telegram_chat_id,
+        business_connection_id=connection.connection_id,
+        kind=DraftKind.outreach,
+        incoming_text=reason,  # the "why now" shown on the card
+        draft_text=ai.draft_outreach(contact, reason) or "",
+        status=DraftStatus.pending,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft

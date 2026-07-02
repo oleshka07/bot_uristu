@@ -382,6 +382,45 @@ def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
         return None
 
 
+def draft_outreach(contact: models.Contact, reason: str) -> str | None:
+    """Draft a proactive first-touch Telegram message (outreach queue).
+
+    Grounded in the full relationship context; written in the user's own
+    voice. Returns None when AI is unavailable — the queue card then asks
+    the user to write manually."""
+    client = _get_client()
+    if client is None:
+        return None
+
+    system = (
+        "Ти пишеш перше повідомлення в Telegram ВІД ІМЕНІ користувача "
+        "(Степана), щоб відновити контакт з людиною. Пиши так, як пише він "
+        "сам — дивись на його репліки в історії і копіюй стиль, лексику та "
+        "емодзі. 1–3 речення, тепло і природно, без формальностей і без "
+        "вибачень за паузу, якщо це не доречно. Якщо є свіжий привід "
+        "(подія, факт) — обіграй його. Відповідай мовою, якою вони "
+        "листувалися. Верни ЛИШЕ текст повідомлення."
+    )
+    prompt = (
+        f"{_contact_context(contact)}\n\n"
+        f"Історія листування:\n{_dialogue_history(contact)}\n\n"
+        f"Привід написати зараз: {reason}\n\n"
+        f"Напиши повідомлення від Степана до {contact.first_name}."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=600,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = _extract_text(resp).strip().strip('"«»')
+        return text or None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("draft_outreach failed: %s", exc)
+        return None
+
+
 def refine_reply(
     contact: models.Contact, current_draft: str, instruction: str
 ) -> str | None:
