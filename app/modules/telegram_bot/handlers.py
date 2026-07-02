@@ -153,8 +153,8 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
             "Налаштування → Telegram Business → Чат-боти (вимкнути/увімкнути).",
         )
         return False
-    contact = service.next_outreach_contact(db)
-    if contact is None:
+    nxt = service.next_outreach_contact(db)
+    if nxt is None:
         from datetime import datetime, timezone
 
         from app.modules.telegram_bot.models import DraftKind, DraftStatus, TelegramDraft
@@ -176,7 +176,8 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
             "Всі, хто був прострочений і доступний у Telegram, опрацьовані.",
         )
         return False
-    draft = service.create_outreach_draft(db, contact, connection)
+    contact, reason = nxt
+    draft = service.create_outreach_draft(db, contact, connection, reason)
     sent = client.send_message(
         admin,
         _outreach_card(contact, draft),
@@ -488,6 +489,105 @@ def handle_admin_message(client, msg: dict) -> None:
 
     if text.startswith("/"):
         _handle_command(client, admin, text)
+        return
+
+    # Voice note (not a reply) = intake: "запиши, що я познайомився з ..."
+    if msg.get("voice"):
+        audio = client.download_file(msg["voice"].get("file_id", ""))
+        transcript = transcribe_ogg(audio) if audio else None
+        if not transcript:
+            client.send_message(
+                admin,
+                "Не зміг розшифрувати голосове (потрібен OPENAI_API_KEY або "
+                "GEMINI_API_KEY).",
+            )
+            return
+        _handle_voice_intake(client, admin, transcript)
+        return
+
+    # Plain text = natural-language search over the network.
+    if text.strip():
+        _handle_network_search(client, admin, text.strip())
+
+
+def _handle_voice_intake(client, admin: int, transcript: str) -> None:
+    from app.modules.insights import ai as _ai
+
+    parsed = _ai.parse_voice_intake(transcript)
+    if parsed is None:
+        client.send_message(
+            admin,
+            "Почув: «" + _esc(transcript[:300]) + "»\n\n"
+            "Не зміг розібрати, про кого це (або AI недоступний). "
+            "Спробуй назвати ім'я людини явно.",
+        )
+        return
+    with SessionLocal() as db:
+        contact, created, facts_added = service.apply_intake(db, parsed)
+        status = "🆕 створив контакт" if created else "оновив контакт"
+        lines = [
+            f"✅ {status}: <b>{_contact_link(contact)}</b>",
+        ]
+        role = " · ".join(filter(None, [contact.position, contact.company]))
+        if role:
+            lines.append(f"💼 {_esc(role)}")
+        if facts_added:
+            lines.append(f"💡 Фактів записано: {facts_added}")
+        note = (parsed.get("note") or "").strip()
+        if note:
+            lines.append(f"📝 {_esc(note[:200])}")
+        client.send_message(admin, "\n".join(lines))
+
+
+def _handle_network_search(client, admin: int, query: str) -> None:
+    from app import crud
+    from app.modules.insights import ai as _ai
+
+    with SessionLocal() as db:
+        contacts = crud.list_contacts(db, sort="name")
+        corpus = []
+        by_id = {}
+        for c in contacts:
+            by_id[c.id] = c
+            facts = "; ".join(
+                f.value for f in getattr(c, "facts", []) if f.is_current
+            )[:200]
+            corpus.append(
+                f"{c.id} | {c.full_name} | "
+                f"{' · '.join(filter(None, [c.position, c.company]))} | "
+                f"{c.location or ''} | {', '.join(t.name for t in c.tags)} | "
+                f"{facts} | {(c.notes or '')[:120]}"
+            )
+        matches = _ai.search_network(query, corpus)
+        if matches is None:
+            # AI off → plain substring search as a fallback.
+            found = crud.list_contacts(db, search=query, sort="name")
+            if not found:
+                client.send_message(admin, f"Нічого не знайшов за «{_esc(query)}».")
+                return
+            lines = [f"<b>Збіги за «{_esc(query)}»</b> (простий пошук)"]
+            for c in found[:10]:
+                lines.append(f"• {_contact_link(c)}")
+            client.send_message(admin, "\n".join(lines))
+            return
+        if not matches:
+            client.send_message(
+                admin, f"У мережі не знайшов нікого під «{_esc(query)}»."
+            )
+            return
+        lines = [f"🔎 <b>«{_esc(query)}»</b>"]
+        for m in matches[:8]:
+            c = by_id.get(m.get("contact_id"))
+            if c is None:
+                continue
+            role = " · ".join(filter(None, [c.position, c.company]))
+            lines.append("")
+            lines.append(
+                f"👤 <b>{_contact_link(c)}</b>"
+                + (f" — {_esc(role)}" if role else "")
+            )
+            lines.append(f"<i>{_esc(m.get('why', ''))}</i>")
+        client.send_message(admin, "\n".join(lines))
 
 
 def _handle_command(client, admin: int, text: str) -> None:
@@ -505,7 +605,11 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/queue — почати обхід (кому написати, з чернетками)\n"
                 "/today — дайджест дня\n"
                 "/due — всі прострочені\n"
-                "/find &lt;ім'я&gt; — пошук контакту\n\n"
+                "/find &lt;ім'я&gt; — пошук за іменем\n\n"
+                "💬 Просто напиши питання — пошук по мережі "
+                "(«хто з моїх шарить у крипті?»)\n"
+                "🎤 Голосове — запишу в базу («познайомився з Андрієм, "
+                "робить фінтех...»)\n\n"
                 "Вхідні з Telegram Business приходять сюди з чернеткою "
                 "відповіді: ✅ надіслати · reply — скоригувати.",
             )

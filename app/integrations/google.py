@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.modules.integrations.google.client import (
     SyncReport,
+    upcoming_events,
     build_authorization_url,
     disconnect,
     handle_oauth_callback,
@@ -24,4 +25,5 @@ __all__ = [
     "handle_oauth_callback",
     "sync",
     "send_email",
+    "upcoming_events",
 ]

@@ -77,6 +77,13 @@ def run_daily_job(send_digest: bool = True) -> dict:
             report = google.sync(db)
             summary["sync"] = report.as_dict()
 
+        # Social sweep: re-scrape socials of the most-due contacts so fresh
+        # life events become outreach hooks in the digest (best effort).
+        try:
+            summary["social_swept"] = sweep_social(db)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("social sweep failed: %s", exc)
+
         data = dashboard.build_dashboard(db)
         summary["due_now"] = data.stats.due_now
 
@@ -95,8 +102,16 @@ def run_daily_job(send_digest: bool = True) -> dict:
                 summary["digest_skipped"] = (
                     "No recipient or Google not connected (needed to send mail)."
                 )
-            # Telegram digest (independent of email).
-            if settings.telegram_configured and settings.telegram_chat_id:
+            # Telegram digest (independent of email). Silence-aware: an
+            # empty digest trains the user to ignore the bot — skip it.
+            nothing_to_say = (
+                not data.suggestions
+                and not data.upcoming
+                and not data.pending_events
+            )
+            if settings.digest_quiet_when_empty and nothing_to_say:
+                summary["telegram_skipped"] = "quiet (nothing actionable)"
+            elif settings.telegram_configured and settings.telegram_chat_id:
                 summary["telegram_sent"] = telegram.send_message(
                     telegram.digest_text(data),
                     reply_markup={
@@ -109,3 +124,57 @@ def run_daily_job(send_digest: bool = True) -> dict:
     finally:
         db.close()
     return summary
+
+
+def sweep_social(db) -> int:
+    """Re-scrape social links of the N most-due contacts; record detected
+    life events (deduped by title) so they surface as outreach hooks."""
+    from app import ai, crud, models, social, warmth
+    from sqlalchemy import select
+
+    if not (settings.scraper_provider and settings.scraper_api_key):
+        return 0
+    n = settings.social_sweep_daily
+    if n <= 0:
+        return 0
+
+    contacts = [
+        c
+        for c in db.scalars(select(models.Contact)).unique()
+        if not c.do_not_contact
+        and warmth.is_due(c)
+        and (c.instagram_url or c.linkedin_url or c.facebook_url or c.twitter_url)
+    ]
+    contacts.sort(key=warmth.overdue_ratio, reverse=True)
+
+    swept = 0
+    for c in contacts[:n]:
+        url = c.instagram_url or c.linkedin_url or c.facebook_url or c.twitter_url
+        try:
+            data = social.fetch_snapshot(url)
+            snapshot = crud.upsert_snapshot(
+                db,
+                c,
+                platform=data.platform,
+                url=data.url,
+                title=data.title,
+                raw_text=data.raw_text,
+            )
+            db.refresh(c)
+            known_titles = {e.title.casefold() for e in c.life_events}
+            for ev in ai.detect_life_events(c, snapshot):
+                title = (ev.get("title") or "").strip()
+                if not title or title.casefold() in known_titles:
+                    continue
+                crud.add_life_event(
+                    db,
+                    c,
+                    event_type=ev.get("event_type", "update"),
+                    title=title,
+                    description=ev.get("description"),
+                    source=data.platform,
+                )
+            swept += 1
+        except Exception as exc:  # pragma: no cover
+            logger.warning("sweep failed for %s: %s", c.full_name, exc)
+    return swept

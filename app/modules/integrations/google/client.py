@@ -388,6 +388,56 @@ def _sync_calendar(
     return added
 
 
+def upcoming_events(
+    db: Session, minutes_min: int = 45, minutes_max: int = 75
+) -> list[dict]:
+    """Calendar events starting within [minutes_min, minutes_max] from now.
+
+    Returns [{id, summary, start, attendee_emails, meet_link}] — the raw
+    material for pre-meeting briefs. Empty list when Google isn't connected
+    or on any error (briefs are best-effort, never noisy)."""
+    creds = _load_credentials(db)
+    if creds is None:
+        return []
+    now = datetime.now(timezone.utc)
+    try:
+        calendar = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        resp = (
+            calendar.events()
+            .list(
+                calendarId="primary",
+                timeMin=(now + timedelta(minutes=minutes_min)).isoformat(),
+                timeMax=(now + timedelta(minutes=minutes_max)).isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=10,
+            )
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("upcoming_events failed: %s", exc)
+        return []
+    out = []
+    for event in resp.get("items", []):
+        start = _event_start(event)
+        if start is None:  # all-day events have no dateTime — skip
+            continue
+        out.append(
+            {
+                "id": event.get("id", ""),
+                "summary": event.get("summary", "Зустріч"),
+                "start": start,
+                "attendee_emails": [
+                    a.get("email", "").lower()
+                    for a in event.get("attendees", [])
+                    if a.get("email") and not a.get("self")
+                ],
+                "meet_link": event.get("hangoutLink"),
+            }
+        )
+    return out
+
+
 # ── Outbound email (for the daily digest) ────────────────────────────────────
 
 

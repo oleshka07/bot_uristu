@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     daily_run_hour: int = 8  # local server hour to run the daily job
     digest_email_to: str | None = None  # where to send the daily digest
+    # Don't send the Telegram digest when there is nothing actionable.
+    digest_quiet_when_empty: bool = True
+
+    # Follow-up cycle: nudge when our last message got no reply for N days.
+    followup_after_days: int = 4
+
+    # Pre-meeting briefs: send a contact brief ~lead minutes before events.
+    meeting_brief_enabled: bool = True
+    meeting_brief_lead_minutes: int = 60
+
+    # Daily social sweep: re-scrape socials of the N most-due contacts to
+    # detect fresh life events (needs a scraper provider). 0 = off.
+    social_sweep_daily: int = 5
 
     # Social scraping provider (for JS-heavy networks)
     scraper_provider: str | None = None  # e.g. "scrapingbee"

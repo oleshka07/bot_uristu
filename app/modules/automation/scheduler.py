@@ -40,6 +40,17 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+    if settings.meeting_brief_enabled:
+        from .briefs import run_brief_check
+
+        _scheduler.add_job(
+            run_brief_check,
+            "interval",
+            minutes=10,
+            id="meeting_briefs",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
     _scheduler.start()
     logger.info(
         "Scheduler started; daily job at %02d:00 server time.",

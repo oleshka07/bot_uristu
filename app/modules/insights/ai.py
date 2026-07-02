@@ -421,6 +421,137 @@ def draft_outreach(contact: models.Contact, reason: str) -> str | None:
         return None
 
 
+_INTAKE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "first_name": {"type": "string"},
+        "last_name": {"type": "string"},
+        "company": {"type": "string"},
+        "position": {"type": "string"},
+        "note": {"type": "string"},
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fact_type": {
+                        "type": "string",
+                        "enum": [
+                            "role",
+                            "employer",
+                            "location",
+                            "interest",
+                            "family",
+                            "relationship",
+                            "preference",
+                            "other",
+                        ],
+                    },
+                    "value": {"type": "string"},
+                },
+                "required": ["fact_type", "value"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["name", "first_name", "last_name", "company", "position", "note", "facts"],
+    "additionalProperties": False,
+}
+
+
+def parse_voice_intake(text: str) -> dict | None:
+    """Turn a dictated note ("познайомився з Андрієм, робить фінтех...")
+    into structured contact data: name, company/position, facts, note.
+    Returns None when AI is off or nothing useful was extracted."""
+    client = _get_client()
+    if client is None or not text.strip():
+        return None
+
+    system = (
+        "Ти асистент нетворкінг-CRM. Користувач надиктував нотатку про людину "
+        "(нове знайомство або оновлення). Витягни структуровано: ім'я людини, "
+        "компанію/посаду якщо є, стабільні факти (інтереси, локація, сім'я, "
+        "домовленості) і коротку нотатку-резюме. Пиши значення мовою нотатки. "
+        "Поля, яких немає в нотатці, лиши порожніми рядками. Respond with "
+        "JSON only."
+    )
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=800,
+            system=system,
+            messages=[{"role": "user", "content": f"Нотатка:\n{text}"}],
+            output_config={
+                "format": {"type": "json_schema", "schema": _INTAKE_SCHEMA}
+            },
+        )
+        data = _extract_json(resp)
+        if isinstance(data, dict) and (data.get("name") or "").strip():
+            return data
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("parse_voice_intake failed: %s", exc)
+    return None
+
+
+_SEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "contact_id": {"type": "integer"},
+                    "why": {"type": "string"},
+                },
+                "required": ["contact_id", "why"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["matches"],
+    "additionalProperties": False,
+}
+
+
+def search_network(query: str, corpus: list[str]) -> list[dict] | None:
+    """Natural-language search over the user's own network.
+
+    ``corpus`` is one compact line per contact ("id | name | role | facts…").
+    Returns [{contact_id, why}] ranked by relevance (why = one transparent
+    sentence, the Happenstance pattern), or None when AI is unavailable."""
+    client = _get_client()
+    if client is None:
+        return None
+
+    system = (
+        "Ти шукаєш людей у особистій мережі користувача. Нижче — по одному "
+        "рядку на контакт. Поверни до 8 найрелевантніших запиту контактів, "
+        "для кожного — one-line пояснення 'чому' мовою запиту, спираючись "
+        "ЛИШЕ на надані дані. Якщо збігів немає — порожній список. "
+        "Respond with JSON only."
+    )
+    prompt = "Запит: " + query + "\n\nМережа:\n" + "\n".join(corpus)
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=1500,
+            thinking={"type": "adaptive"},
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={
+                "format": {"type": "json_schema", "schema": _SEARCH_SCHEMA}
+            },
+        )
+        data = _extract_json(resp)
+        if isinstance(data, dict) and isinstance(data.get("matches"), list):
+            return data["matches"]
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("search_network failed: %s", exc)
+    return None
+
+
 _TRANSLATE_LANGS = {
     "en": "англійську",
     "cs": "чеську",
