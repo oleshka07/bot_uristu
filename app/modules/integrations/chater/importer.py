@@ -41,7 +41,7 @@ _C = {
     "tg_chat_id": ["telegram_chat_id", "chat_id", "tg_chat_id"],
     "tg_username": ["telegram_username", "username"],
     "ch_type": ["type", "channel", "kind", "platform", "channel_type"],
-    "ch_value": ["value", "address", "identifier", "username", "handle", "contact_value"],
+    "ch_value": ["channel_value", "value", "address", "identifier", "username", "handle", "contact_value"],
     "msg_text": ["text", "content", "body", "message", "message_text"],
     "msg_time": ["created_at", "timestamp", "date", "sent_at", "ts", "time"],
     "msg_id": ["id", "message_id", "tg_message_id", "telegram_message_id"],
