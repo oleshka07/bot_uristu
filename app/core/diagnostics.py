@@ -49,6 +49,16 @@ def recent(limit: int = 200, level: str | None = None) -> list[dict]:
     return items[-limit:]
 
 
+def _ai_providers() -> dict:
+    """Which LLM providers have keys, and which one is active (primary)."""
+    from app.modules.insights import llm
+
+    return {
+        "active": llm.active_provider(),
+        "available": llm.providers_in_order(),
+    }
+
+
 def snapshot(db) -> dict:
     """A one-call health picture of the service and its integrations."""
     from sqlalchemy import func, select
@@ -79,6 +89,7 @@ def snapshot(db) -> dict:
         "version": __version__,
         "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "ai_enabled": settings.ai_enabled,
+        "ai_providers": _ai_providers(),
         "auth_enabled": settings.auth_enabled,
         "scheduler_enabled": settings.scheduler_enabled,
         "database": db_info,

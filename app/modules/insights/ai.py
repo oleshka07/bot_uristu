@@ -1,38 +1,27 @@
-"""Claude-powered relationship intelligence.
+"""Relationship intelligence, powered by whichever LLM provider is configured.
 
-Every function degrades gracefully: if no ANTHROPIC_API_KEY is configured (or
-a call fails), a deterministic rule-based fallback is returned so the product
-keeps working. AI is an enhancement, never a hard dependency.
+All model calls go through ``llm`` (Anthropic / OpenAI / Gemini with automatic
+fallback). Every function degrades gracefully: if no provider is available (or
+all fail) a deterministic rule-based fallback is returned so the product keeps
+working. AI is an enhancement, never a hard dependency.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import date
 
 from app import models, warmth
-from app.core.config import settings
+
+from . import llm
 
 logger = logging.getLogger("networking.ai")
 
-_client = None
 
-
-def _get_client():
-    """Lazily build the Anthropic client. Returns None if unavailable."""
-    global _client
-    if not settings.ai_enabled:
+def _clean(out: str | None) -> str | None:
+    """Trim wrapping quotes the model sometimes adds around a message."""
+    if not out:
         return None
-    if _client is None:
-        try:
-            import anthropic
-
-            _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        except Exception as exc:  # pragma: no cover - import/credential issues
-            logger.warning("Anthropic client unavailable: %s", exc)
-            return None
-    return _client
+    return out.strip().strip('"«»') or None
 
 
 # ── Prompt context building ──────────────────────────────────────────────────
@@ -113,248 +102,6 @@ def _contact_context(contact: models.Contact) -> str:
     return "\n".join(lines)
 
 
-def _extract_text(response) -> str:
-    parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
-    return "".join(parts).strip()
-
-
-def _extract_json(response) -> dict | list | None:
-    text = _extract_text(response)
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Be forgiving: pull the first {...} or [...] block.
-        for opener, closer in (("{", "}"), ("[", "]")):
-            start = text.find(opener)
-            end = text.rfind(closer)
-            if start != -1 and end > start:
-                try:
-                    return json.loads(text[start : end + 1])
-                except json.JSONDecodeError:
-                    continue
-    return None
-
-
-# ── Public API ───────────────────────────────────────────────────────────────
-
-
-def generate_dossier(contact: models.Contact) -> str:
-    """A short, warm intelligence brief on the person."""
-    client = _get_client()
-    if client is None:
-        return _fallback_dossier(contact)
-
-    system = (
-        "You are a thoughtful networking assistant who helps the user nurture "
-        "genuine relationships. Write concise, human dossiers — never creepy, "
-        "never salesy. Base everything strictly on the data given; do not invent "
-        "facts. If information is missing, say what would be worth learning."
-    )
-    prompt = (
-        "Write a short relationship dossier (120–200 words) for the contact "
-        "below. Cover: who they are, the state and trajectory of the "
-        "relationship, and 2–3 concrete things to keep in mind when engaging. "
-        "Plain prose, no headings.\n\n"
-        f"{_contact_context(contact)}"
-    )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1200,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _extract_text(resp)
-        return text or _fallback_dossier(contact)
-    except Exception as exc:  # pragma: no cover - network/runtime
-        logger.warning("generate_dossier failed: %s", exc)
-        return _fallback_dossier(contact)
-
-
-_RECOMMENDATION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "should_contact": {"type": "boolean"},
-        "urgency": {"type": "string", "enum": ["low", "medium", "high"]},
-        "channel": {
-            "type": "string",
-            "enum": ["call", "message", "email", "meeting", "social", "event", "other"],
-        },
-        "timing": {"type": "string"},
-        "reason": {"type": "string"},
-        "talking_points": {"type": "array", "items": {"type": "string"}},
-        "draft_message": {"type": "string"},
-    },
-    "required": [
-        "should_contact",
-        "urgency",
-        "channel",
-        "timing",
-        "reason",
-        "talking_points",
-        "draft_message",
-    ],
-    "additionalProperties": False,
-}
-
-
-def recommend_outreach(contact: models.Contact) -> dict:
-    """Structured advice on whether/how/when to reach out, plus a draft."""
-    client = _get_client()
-    if client is None:
-        return _fallback_recommendation(contact)
-
-    system = (
-        "You are a networking strategist. Give practical, specific outreach "
-        "advice grounded only in the provided data. Drafts should sound like "
-        "the user wrote them: warm, natural, brief. Respond with JSON only."
-    )
-    prompt = (
-        "Based on the contact below, decide whether the user should reach out "
-        "now, through which channel, when, and why. Provide 2–4 talking points "
-        "and a ready-to-send draft message (2–4 sentences).\n\n"
-        f"{_contact_context(contact)}"
-    )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1500,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _RECOMMENDATION_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict):
-            data["source"] = "ai"
-            return data
-    except Exception as exc:  # pragma: no cover
-        logger.warning("recommend_outreach failed: %s", exc)
-    return _fallback_recommendation(contact)
-
-
-_SENTIMENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "scores": {
-            "type": "array",
-            "items": {"type": "number"},
-        }
-    },
-    "required": ["scores"],
-    "additionalProperties": False,
-}
-
-
-def score_sentiments(texts: list[str]) -> list[float]:
-    """Score the tone of each text in [-1, 1] (warm/positive → +1).
-
-    Batched into a single Claude call for efficiency. Returns 0.0 for every
-    item when AI is unavailable or on any error (neutral, never blocks sync).
-    """
-    if not texts:
-        return []
-    client = _get_client()
-    if client is None:
-        return [0.0] * len(texts)
-
-    numbered = "\n".join(f"{i+1}. {t[:400]}" for i, t in enumerate(texts))
-    system = (
-        "You rate the emotional tone of short interaction snippets (emails, "
-        "meeting titles, chat messages) from the point of view of relationship "
-        "warmth. Return a JSON array 'scores' with one number per item in the "
-        "same order, each between -1 (cold/negative/conflict) and 1 "
-        "(warm/positive/friendly); 0 is neutral or purely transactional."
-    )
-    prompt = f"Rate these {len(texts)} items:\n{numbered}"
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1000,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _SENTIMENT_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict) and isinstance(data.get("scores"), list):
-            scores = data["scores"]
-            out: list[float] = []
-            for i in range(len(texts)):
-                try:
-                    out.append(max(-1.0, min(1.0, float(scores[i]))))
-                except (IndexError, TypeError, ValueError):
-                    out.append(0.0)
-            return out
-    except Exception as exc:  # pragma: no cover
-        logger.warning("score_sentiments failed: %s", exc)
-    return [0.0] * len(texts)
-
-
-def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> str:
-    """A short congratulatory / supportive message for a life event."""
-    client = _get_client()
-    if client is None:
-        return _fallback_event_message(contact, event)
-
-    system = (
-        "You write short, sincere, personal messages for meaningful moments. "
-        "No clichés, no emojis unless natural, match a warm friendly tone."
-    )
-    prompt = (
-        f"Write a 1–3 sentence message to {contact.full_name} about this event:\n"
-        f"  {event.event_type}: {event.title}\n"
-        f"  {event.description or ''}\n\n"
-        f"Relationship: {contact.relationship_type.value}."
-    )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=400,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return _extract_text(resp) or _fallback_event_message(contact, event)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("suggest_event_message failed: %s", exc)
-        return _fallback_event_message(contact, event)
-
-
-def build_style_card(sample: list[str]) -> str | None:
-    """Distill the owner's writing style from a sample of their real
-    messages into a compact style card for draft prompts."""
-    client = _get_client()
-    if client is None or not sample:
-        return None
-    joined = "\n".join(f"- {s}" for s in sample[:300])
-    system = (
-        "Ти аналізуєш стиль письма людини за її реальними повідомленнями. "
-        "Опиши компактно (до 250 слів, маркованим списком): мови і коли яку "
-        "вживає; довжина й ритм речень; привітання/прощання; емодзі та "
-        "пунктуація; тон (формальність, гумор); улюблені слова й фрази; "
-        "чого НЕ робить. Пиши українською, це інструкція для копірайтера, "
-        "який писатиме від її імені."
-    )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1200,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": f"Повідомлення:\n{joined}"}],
-        )
-        return _extract_text(resp) or None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("build_style_card failed: %s", exc)
-        return None
-
-
 def _style_context(contact: models.Contact) -> str:
     """The owner's voice: global style card + real examples to THIS person."""
     import json as _json
@@ -399,16 +146,168 @@ def _dialogue_history(contact: models.Contact, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
+
+def generate_dossier(contact: models.Contact) -> str:
+    """A short, warm intelligence brief on the person."""
+    if not llm.enabled():
+        return _fallback_dossier(contact)
+    system = (
+        "You are a thoughtful networking assistant who helps the user nurture "
+        "genuine relationships. Write concise, human dossiers — never creepy, "
+        "never salesy. Base everything strictly on the data given; do not invent "
+        "facts. If information is missing, say what would be worth learning."
+    )
+    prompt = (
+        "Write a short relationship dossier (120–200 words) for the contact "
+        "below. Cover: who they are, the state and trajectory of the "
+        "relationship, and 2–3 concrete things to keep in mind when engaging. "
+        "Plain prose, no headings.\n\n"
+        f"{_contact_context(contact)}"
+    )
+    return llm.text(system, prompt, max_tokens=1200, thinking=True) or _fallback_dossier(
+        contact
+    )
+
+
+_RECOMMENDATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "should_contact": {"type": "boolean"},
+        "urgency": {"type": "string", "enum": ["low", "medium", "high"]},
+        "channel": {
+            "type": "string",
+            "enum": ["call", "message", "email", "meeting", "social", "event", "other"],
+        },
+        "timing": {"type": "string"},
+        "reason": {"type": "string"},
+        "talking_points": {"type": "array", "items": {"type": "string"}},
+        "draft_message": {"type": "string"},
+    },
+    "required": [
+        "should_contact",
+        "urgency",
+        "channel",
+        "timing",
+        "reason",
+        "talking_points",
+        "draft_message",
+    ],
+    "additionalProperties": False,
+}
+
+
+def recommend_outreach(contact: models.Contact) -> dict:
+    """Structured advice on whether/how/when to reach out, plus a draft."""
+    if not llm.enabled():
+        return _fallback_recommendation(contact)
+    system = (
+        "You are a networking strategist. Give practical, specific outreach "
+        "advice grounded only in the provided data. Drafts should sound like "
+        "the user wrote them: warm, natural, brief. Respond with JSON only."
+    )
+    prompt = (
+        "Based on the contact below, decide whether the user should reach out "
+        "now, through which channel, when, and why. Provide 2–4 talking points "
+        "and a ready-to-send draft message (2–4 sentences).\n\n"
+        f"{_contact_context(contact)}"
+    )
+    data = llm.json(
+        system, prompt, _RECOMMENDATION_SCHEMA, max_tokens=1500, thinking=True
+    )
+    if isinstance(data, dict):
+        data["source"] = "ai"
+        return data
+    return _fallback_recommendation(contact)
+
+
+_SENTIMENT_SCHEMA = {
+    "type": "object",
+    "properties": {"scores": {"type": "array", "items": {"type": "number"}}},
+    "required": ["scores"],
+    "additionalProperties": False,
+}
+
+
+def score_sentiments(texts: list[str]) -> list[float]:
+    """Score the tone of each text in [-1, 1] (warm/positive → +1).
+
+    Batched into a single call for efficiency. Returns 0.0 for every item when
+    AI is unavailable or on any error (neutral, never blocks sync).
+    """
+    if not texts:
+        return []
+    if not llm.enabled():
+        return [0.0] * len(texts)
+    numbered = "\n".join(f"{i+1}. {t[:400]}" for i, t in enumerate(texts))
+    system = (
+        "You rate the emotional tone of short interaction snippets (emails, "
+        "meeting titles, chat messages) from the point of view of relationship "
+        "warmth. Return a JSON array 'scores' with one number per item in the "
+        "same order, each between -1 (cold/negative/conflict) and 1 "
+        "(warm/positive/friendly); 0 is neutral or purely transactional."
+    )
+    data = llm.json(
+        system, f"Rate these {len(texts)} items:\n{numbered}", _SENTIMENT_SCHEMA,
+        max_tokens=1000,
+    )
+    if isinstance(data, dict) and isinstance(data.get("scores"), list):
+        scores = data["scores"]
+        out: list[float] = []
+        for i in range(len(texts)):
+            try:
+                out.append(max(-1.0, min(1.0, float(scores[i]))))
+            except (IndexError, TypeError, ValueError):
+                out.append(0.0)
+        return out
+    return [0.0] * len(texts)
+
+
+def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> str:
+    """A short congratulatory / supportive message for a life event."""
+    if not llm.enabled():
+        return _fallback_event_message(contact, event)
+    system = (
+        "You write short, sincere, personal messages for meaningful moments. "
+        "No clichés, no emojis unless natural, match a warm friendly tone."
+    )
+    prompt = (
+        f"Write a 1–3 sentence message to {contact.full_name} about this event:\n"
+        f"  {event.event_type}: {event.title}\n"
+        f"  {event.description or ''}\n\n"
+        f"Relationship: {contact.relationship_type.value}."
+    )
+    return llm.text(system, prompt, max_tokens=400) or _fallback_event_message(
+        contact, event
+    )
+
+
+def build_style_card(sample: list[str]) -> str | None:
+    """Distill the owner's writing style from a sample of their real
+    messages into a compact style card for draft prompts."""
+    if not llm.enabled() or not sample:
+        return None
+    joined = "\n".join(f"- {s}" for s in sample[:300])
+    system = (
+        "Ти аналізуєш стиль письма людини за її реальними повідомленнями. "
+        "Опиши компактно (до 250 слів, маркованим списком): мови і коли яку "
+        "вживає; довжина й ритм речень; привітання/прощання; емодзі та "
+        "пунктуація; тон (формальність, гумор); улюблені слова й фрази; "
+        "чого НЕ робить. Пиши українською, це інструкція для копірайтера, "
+        "який писатиме від її імені."
+    )
+    return llm.text(system, f"Повідомлення:\n{joined}", max_tokens=1200, thinking=True)
+
+
 def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
     """Draft a reply to an incoming Telegram DM, in the user's own voice.
 
     Returns None when AI is unavailable or fails — the caller then shows the
     incoming message to the admin without a draft (never a canned reply).
     """
-    client = _get_client()
-    if client is None:
+    if not llm.enabled():
         return None
-
     system = (
         "Ти пишеш відповіді в Telegram ВІД ІМЕНІ користувача (Степана). "
         "Пиши так, як пише він сам — уважно дивись на його попередні репліки "
@@ -427,18 +326,7 @@ def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
         f"Нове повідомлення від {contact.first_name}:\n«{incoming_text}»\n\n"
         "Напиши відповідь від Степана."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=600,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _extract_text(resp).strip().strip('"«»')
-        return text or None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("draft_reply failed: %s", exc)
-        return None
+    return _clean(llm.text(system, prompt, max_tokens=600))
 
 
 def draft_outreach(contact: models.Contact, reason: str) -> str | None:
@@ -447,10 +335,8 @@ def draft_outreach(contact: models.Contact, reason: str) -> str | None:
     Grounded in the full relationship context; written in the user's own
     voice. Returns None when AI is unavailable — the queue card then asks
     the user to write manually."""
-    client = _get_client()
-    if client is None:
+    if not llm.enabled():
         return None
-
     system = (
         "Ти пишеш перше повідомлення в Telegram ВІД ІМЕНІ користувача "
         "(Степана), щоб відновити контакт з людиною. Пиши так, як пише він "
@@ -468,18 +354,7 @@ def draft_outreach(contact: models.Contact, reason: str) -> str | None:
         f"Привід написати зараз: {reason}\n\n"
         f"Напиши повідомлення від Степана до {contact.first_name}."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=600,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _extract_text(resp).strip().strip('"«»')
-        return text or None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("draft_outreach failed: %s", exc)
-        return None
+    return _clean(llm.text(system, prompt, max_tokens=600))
 
 
 _INTAKE_SCHEMA = {
@@ -522,13 +397,10 @@ _INTAKE_SCHEMA = {
 
 
 def parse_voice_intake(text: str) -> dict | None:
-    """Turn a dictated note ("познайомився з Андрієм, робить фінтех...")
-    into structured contact data: name, company/position, facts, note.
-    Returns None when AI is off or nothing useful was extracted."""
-    client = _get_client()
-    if client is None or not text.strip():
+    """Turn a dictated note into structured contact data. None when AI is
+    off or nothing useful was extracted."""
+    if not llm.enabled() or not text.strip():
         return None
-
     system = (
         "Ти асистент нетворкінг-CRM. Користувач надиктував нотатку про людину "
         "(нове знайомство або оновлення). Витягни структуровано: ім'я людини, "
@@ -537,21 +409,9 @@ def parse_voice_intake(text: str) -> dict | None:
         "Поля, яких немає в нотатці, лиши порожніми рядками. Respond with "
         "JSON only."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=800,
-            system=system,
-            messages=[{"role": "user", "content": f"Нотатка:\n{text}"}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _INTAKE_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict) and (data.get("name") or "").strip():
-            return data
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("parse_voice_intake failed: %s", exc)
+    data = llm.json(system, f"Нотатка:\n{text}", _INTAKE_SCHEMA, max_tokens=800)
+    if isinstance(data, dict) and (data.get("name") or "").strip():
+        return data
     return None
 
 
@@ -579,13 +439,10 @@ _SEARCH_SCHEMA = {
 def search_network(query: str, corpus: list[str]) -> list[dict] | None:
     """Natural-language search over the user's own network.
 
-    ``corpus`` is one compact line per contact ("id | name | role | facts…").
-    Returns [{contact_id, why}] ranked by relevance (why = one transparent
-    sentence, the Happenstance pattern), or None when AI is unavailable."""
-    client = _get_client()
-    if client is None:
+    ``corpus`` is one compact line per contact. Returns [{contact_id, why}]
+    ranked by relevance, or None when AI is unavailable."""
+    if not llm.enabled():
         return None
-
     system = (
         "Ти шукаєш людей у особистій мережі користувача. Нижче — по одному "
         "рядку на контакт. Поверни до 8 найрелевантніших запиту контактів, "
@@ -594,22 +451,9 @@ def search_network(query: str, corpus: list[str]) -> list[dict] | None:
         "Respond with JSON only."
     )
     prompt = "Запит: " + query + "\n\nМережа:\n" + "\n".join(corpus)
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1500,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _SEARCH_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict) and isinstance(data.get("matches"), list):
-            return data["matches"]
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("search_network failed: %s", exc)
+    data = llm.json(system, prompt, _SEARCH_SCHEMA, max_tokens=1500, thinking=True)
+    if isinstance(data, dict) and isinstance(data.get("matches"), list):
+        return data["matches"]
     return None
 
 
@@ -634,47 +478,18 @@ _CARD_SCHEMA = {
 
 
 def parse_business_card(image: bytes, mime: str = "image/jpeg") -> dict | None:
-    """Read a business-card photo (Claude vision) into contact channels.
-    Missing fields come back as empty strings; None when AI is off/fails."""
-    import base64
-
-    client = _get_client()
-    if client is None or not image:
+    """Read a business-card photo (vision) into contact channels. Missing
+    fields come back as empty strings; None when AI is off/fails."""
+    if not llm.enabled() or not image:
         return None
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=600,
-            system=(
-                "Ти читаєш фото візитки. Витягни контактні дані точно як "
-                "надруковано. Поля, яких немає — порожній рядок. "
-                "Respond with JSON only."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime,
-                                "data": base64.b64encode(image).decode(),
-                            },
-                        },
-                        {"type": "text", "text": "Зчитай контакти з візитки."},
-                    ],
-                }
-            ],
-            output_config={
-                "format": {"type": "json_schema", "schema": _CARD_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        return data if isinstance(data, dict) else None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("parse_business_card failed: %s", exc)
-        return None
+    system = (
+        "Ти читаєш фото візитки. Витягни контактні дані точно як надруковано. "
+        "Поля, яких немає — порожній рядок. Respond with JSON only."
+    )
+    data = llm.vision_json(
+        system, "Зчитай контакти з візитки.", image, mime, _CARD_SCHEMA, max_tokens=600
+    )
+    return data if isinstance(data, dict) else None
 
 
 _TRANSLATE_LANGS = {
@@ -686,35 +501,19 @@ _TRANSLATE_LANGS = {
 
 
 def translate_message(text: str, lang: str) -> str | None:
-    """Translate a drafted messenger message, preserving its casual tone,
-    emoji and length. Returns None when AI is unavailable or fails."""
-    client = _get_client()
-    if client is None or not text.strip():
+    """Translate a drafted messenger message, preserving casual tone, emoji
+    and length. Returns None when AI is unavailable or fails."""
+    if not llm.enabled() or not text.strip():
         return None
     language = _TRANSLATE_LANGS.get(lang, lang)
-
     system = (
         "Ти перекладаєш коротке месенджерне повідомлення. Збережи неформальний "
         "тон, емодзі та довжину — це має звучати природно для носія мови, а не "
         "як машинний переклад. Верни ЛИШЕ перекладений текст."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=600,
-            system=system,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Переклади на {language}:\n\n{text}",
-                }
-            ],
-        )
-        out = _extract_text(resp).strip().strip('"«»')
-        return out or None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("translate_message failed: %s", exc)
-        return None
+    return _clean(
+        llm.text(system, f"Переклади на {language}:\n\n{text}", max_tokens=600)
+    )
 
 
 def refine_reply(
@@ -722,10 +521,8 @@ def refine_reply(
 ) -> str | None:
     """Rewrite a drafted message according to the user's instruction
     (typed or transcribed from a voice note)."""
-    client = _get_client()
-    if client is None:
+    if not llm.enabled():
         return None
-
     system = (
         "Ти редагуєш чернетку Telegram-повідомлення від імені користувача "
         "(Степана). Збережи його стиль — коротко, природно, месенджерно. "
@@ -738,18 +535,7 @@ def refine_reply(
         f"Інструкція від Степана: {instruction}\n\n"
         "Перепиши чернетку згідно з інструкцією."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=600,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _extract_text(resp).strip().strip('"«»')
-        return text or None
-    except Exception as exc:  # pragma: no cover - network
-        logger.warning("refine_reply failed: %s", exc)
-        return None
+    return _clean(llm.text(system, prompt, max_tokens=600))
 
 
 _FACTS_SCHEMA = {
@@ -790,16 +576,9 @@ _FACTS_SCHEMA = {
 
 
 def extract_facts(contact: models.Contact) -> list[dict]:
-    """Read everything known about a contact and extract durable facts.
-
-    Returns a list of {fact_type, value, confidence}. Only facts clearly
-    supported by the data are returned; empty on any error or when AI is off.
-    This is the consolidation step: episodic history → semantic facts.
-    """
-    client = _get_client()
-    if client is None:
+    """Read everything known about a contact and extract durable facts."""
+    if not llm.enabled():
         return []
-
     system = (
         "You extract durable, stable facts about a person from a relationship "
         "CRM record — role, employer, location, interests, family, key "
@@ -813,22 +592,9 @@ def extract_facts(contact: models.Contact) -> list[dict]:
         "remembering long-term. Skip transient chatter and one-off events.\n\n"
         f"{_contact_context(contact)}"
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1500,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _FACTS_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict) and isinstance(data.get("facts"), list):
-            return [f for f in data["facts"] if f.get("value")]
-    except Exception as exc:  # pragma: no cover
-        logger.warning("extract_facts failed: %s", exc)
+    data = llm.json(system, prompt, _FACTS_SCHEMA, max_tokens=1500, thinking=True)
+    if isinstance(data, dict) and isinstance(data.get("facts"), list):
+        return [f for f in data["facts"] if f.get("value")]
     return []
 
 
@@ -858,18 +624,15 @@ _EVENTS_SCHEMA = {
 }
 
 
-def detect_life_events(contact: models.Contact, snapshot: models.SocialSnapshot) -> list[dict]:
-    """Read a social snapshot and extract candidate life events.
-
-    Returns a list of dicts: {event_type, title, description, confidence}.
-    """
-    client = _get_client()
-    if client is None:
+def detect_life_events(
+    contact: models.Contact, snapshot: models.SocialSnapshot
+) -> list[dict]:
+    """Read a social snapshot and extract candidate life events."""
+    if not llm.enabled():
         return []
     text = (snapshot.raw_text or snapshot.title or "").strip()
     if not text:
         return []
-
     system = (
         "You detect meaningful life events from social media text — new job, "
         "promotion, relocation, marriage/engagement, new baby, a launch, an "
@@ -882,22 +645,9 @@ def detect_life_events(contact: models.Contact, snapshot: models.SocialSnapshot)
         f"Content:\n{text[:4000]}\n\n"
         "List any significant life events you can confidently detect."
     )
-    try:
-        resp = client.messages.create(
-            model=settings.ai_model,
-            max_tokens=1200,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {"type": "json_schema", "schema": _EVENTS_SCHEMA}
-            },
-        )
-        data = _extract_json(resp)
-        if isinstance(data, dict) and isinstance(data.get("events"), list):
-            return data["events"]
-    except Exception as exc:  # pragma: no cover
-        logger.warning("detect_life_events failed: %s", exc)
+    data = llm.json(system, prompt, _EVENTS_SCHEMA, max_tokens=1200, thinking=True)
+    if isinstance(data, dict) and isinstance(data.get("events"), list):
+        return data["events"]
     return []
 
 
@@ -920,7 +670,7 @@ def _fallback_dossier(contact: models.Contact) -> str:
         bits.append(f"Notes on file: {contact.notes}")
     if warmth.is_due(contact):
         bits.append("They are due for a check-in — a light, genuine message would help.")
-    bits.append("(Add an Anthropic API key to generate richer AI dossiers.)")
+    bits.append("(Configure an AI provider key to generate richer AI dossiers.)")
     return " ".join(bits)
 
 

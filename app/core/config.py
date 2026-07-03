@@ -12,13 +12,14 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # AI
+    # AI — provider-agnostic. ai_provider picks the primary text/vision brain;
+    # calls fall back to any other provider that has a key, so a single
+    # provider running out of credit never takes the product down.
+    ai_provider: str = "anthropic"  # anthropic | openai | gemini
     anthropic_api_key: str | None = None
     ai_model: str = "claude-opus-4-8"
-
-    # Voice transcription for Telegram voice notes (Whisper first, Gemini
-    # fallback — same providers/keys Chater used, so the keys carry over).
     openai_api_key: str | None = None
+    openai_model: str = "gpt-4o"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
@@ -90,7 +91,9 @@ class Settings(BaseSettings):
 
     @property
     def ai_enabled(self) -> bool:
-        return bool(self.anthropic_api_key)
+        return bool(
+            self.anthropic_api_key or self.openai_api_key or self.gemini_api_key
+        )
 
     @property
     def google_configured(self) -> bool:

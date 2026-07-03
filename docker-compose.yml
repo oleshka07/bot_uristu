@@ -22,8 +22,10 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://networking:${POSTGRES_PASSWORD:-networking}@db:5432/networking
+      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-claude-opus-4-8}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:-}
       API_KEY: ${API_KEY:-}
@@ -60,8 +62,10 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://networking:${POSTGRES_PASSWORD:-networking}@db:5432/networking
+      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-claude-opus-4-8}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_POLLING_ENABLED: ${TELEGRAM_POLLING_ENABLED:-false}
