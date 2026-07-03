@@ -93,6 +93,36 @@ def find_or_create_contact(
     return contact, True
 
 
+# ── Conversation closers ─────────────────────────────────────────────────────
+
+# Words/emoji that, alone, mean "conversation over — no reply needed".
+_CLOSER_VOCAB = {
+    "ок", "окей", "оки", "ok", "okay", "добре", "гуд", "good",
+    "дякую", "дяки", "дяка", "спасібо", "спасибо", "спс", "пасіб", "пасибі",
+    "thanks", "thank", "you", "thx", "ty", "мерсі",
+    "пока", "бувай", "бувайте", "бб", "bye", "goodbye", "чао", "чмок",
+    "все", "всьо", "ясно", "зрозуміло", "зрозумів", "зрозуміла", "понял", "поняла",
+    "супер", "клас", "круто", "кул", "cool", "nice", "великий", "величезний",
+    "давай", "домовились", "домовилися", "згода", "заметано",
+    "добраніч", "надобраніч", "гарного", "дня", "вечора", "вихідних",
+    "до", "зустрічі", "звязку", "зв'язку", "побачення", "завтра",
+    "взаємно", "навзаєм", "тобі", "вам", "і", "теж", "також",
+    "👍", "👌", "🙏", "❤️", "🤝", "😉", "🔥", "💪", "✌️", "🫡", "😊", "))", ")))",
+}
+
+
+def is_closer(text: str) -> bool:
+    """True when the message is just a polite conversation-ender (thanks,
+    bye, ok) that needs no reply — drafting one creates endless loops."""
+    import re
+
+    cleaned = re.sub(r"[.,!?;:()\-–—]", " ", text.casefold())
+    tokens = [tok for tok in cleaned.split() if tok]
+    if not tokens or len(tokens) > 5:
+        return False
+    return all(tok in _CLOSER_VOCAB for tok in tokens)
+
+
 # ── Draft lifecycle ──────────────────────────────────────────────────────────
 
 
@@ -106,8 +136,9 @@ def handle_incoming(
     last_name: str | None,
     username: str | None,
     business_connection_id: str | None,
-) -> tuple[TelegramDraft, Contact, bool]:
-    """Process an incoming business DM end-to-end (steps 1–4 above)."""
+) -> tuple[TelegramDraft | None, Contact, bool]:
+    """Process an incoming business DM end-to-end (steps 1–4 above).
+    Returns draft=None for conversation-enders (logged, but no reply)."""
     contact, is_new = find_or_create_contact(
         db, chat_id, first_name, last_name, username
     )
@@ -129,7 +160,16 @@ def handle_incoming(
         db.commit()
 
     db.refresh(contact)
+
+    # Conversation closers ("ок, дякую", "все, пока") need no reply — a
+    # drafted answer to a goodbye creates infinite politeness loops.
+    if is_closer(text):
+        return None, contact, is_new
+
     draft_text = ai.draft_reply(contact, text) or ""
+    if draft_text.strip() == "[SKIP]":
+        # The model judged this a conversation-ender in context.
+        return None, contact, is_new
 
     draft = TelegramDraft(
         contact_id=contact.id,
@@ -265,6 +305,19 @@ def _reachable(db: Session):
     )
 
 
+def effective_importance(contact: Contact) -> int:
+    """Explicit importance (1..3) or, when unset (0), derived from dialogue
+    depth — long real conversations outrank one-off exchanges."""
+    if contact.importance:
+        return contact.importance
+    n = len(contact.interactions)
+    if n >= 60:
+        return 3
+    if n >= 15:
+        return 2
+    return 1
+
+
 def birthday_reason(contact: Contact) -> str:
     return "сьогодні день народження 🎉 — привітай!"
 
@@ -350,7 +403,10 @@ def next_outreach_contact(db: Session) -> tuple[Contact, str] | None:
     due = [c for c in pool if warmth.is_due(c)]
     if not due:
         return None
-    due.sort(key=warmth.overdue_ratio, reverse=True)
+    due.sort(
+        key=lambda c: (effective_importance(c), warmth.overdue_ratio(c)),
+        reverse=True,
+    )
     return due[0], outreach_reason(due[0])
 
 
@@ -454,3 +510,73 @@ def apply_intake(db: Session, parsed: dict) -> tuple[Contact, bool, int]:
         added += 1
     db.refresh(contact)
     return contact, created, added
+
+
+# ── Channel intake (reply to the 📇 message) ─────────────────────────────────
+
+_CHANNEL_FIELDS = {
+    "email": "Email",
+    "phone": "Телефон",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "instagram_url": "Instagram",
+    "linkedin_url": "LinkedIn",
+    "facebook_url": "Facebook",
+    "twitter_url": "Twitter/X",
+    "youtube_url": "YouTube",
+    "github_url": "GitHub",
+    "website_url": "Сайт",
+    "company": "Компанія",
+    "position": "Посада",
+}
+
+
+def parse_channel_text(text: str) -> dict:
+    """Pull channels out of free text: emails, phones, social links, @handles."""
+    import re
+
+    out: dict[str, str] = {}
+    for email in re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", text):
+        out.setdefault("email", email)
+    for phone in re.findall(r"\+?\d[\d\s\-()]{7,}\d", text):
+        out.setdefault("phone", re.sub(r"[\s\-()]", "", phone))
+    for url in re.findall(r"(?:https?://)?[\w.-]+\.[a-z]{2,}/[\w\-./?=%@+]*", text, re.I):
+        low = url.lower()
+        full = url if "://" in url else f"https://{url}"
+        if "instagram.com" in low:
+            out.setdefault("instagram_url", full)
+        elif "linkedin.com" in low:
+            out.setdefault("linkedin_url", full)
+        elif "facebook.com" in low or "fb.com" in low:
+            out.setdefault("facebook_url", full)
+        elif "twitter.com" in low or "x.com" in low:
+            out.setdefault("twitter_url", full)
+        elif "youtube.com" in low or "youtu.be" in low:
+            out.setdefault("youtube_url", full)
+        elif "github.com" in low:
+            out.setdefault("github_url", full)
+        elif "t.me" in low:
+            handle = full.rstrip("/").rsplit("/", 1)[-1]
+            out.setdefault("telegram", f"@{handle}")
+        elif "wa.me" in low:
+            out.setdefault("whatsapp", full.rstrip("/").rsplit("/", 1)[-1])
+        else:
+            out.setdefault("website_url", full)
+    for handle in re.findall(r"(?<![\w@.])@([A-Za-z]\w{3,31})\b", text):
+        out.setdefault("telegram", f"@{handle}")
+    return out
+
+
+def apply_channels(db: Session, contact: Contact, data: dict) -> list[str]:
+    """Write parsed channels into the contact. Returns human labels saved."""
+    saved = []
+    for field, label in _CHANNEL_FIELDS.items():
+        value = (data.get(field) or "").strip()
+        if not value:
+            continue
+        setattr(contact, field, value[:300])
+        saved.append(label)
+    if saved:
+        db.commit()
+        db.refresh(contact)
+    return saved

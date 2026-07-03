@@ -47,6 +47,7 @@ class ContactBase(BaseModel):
     notes: str | None = None
     tone: str | None = Field(default=None, max_length=80)
     do_not_contact: bool = False
+    importance: int = Field(default=0, ge=0, le=3)
 
 
 class ContactCreate(ContactBase):
@@ -78,6 +79,7 @@ class ContactUpdate(BaseModel):
     notes: str | None = None
     tone: str | None = Field(default=None, max_length=80)
     do_not_contact: bool | None = None
+    importance: int | None = Field(default=None, ge=0, le=3)
     tags: list[str] | None = None
 
 

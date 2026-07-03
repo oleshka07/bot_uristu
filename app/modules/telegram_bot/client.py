@@ -102,6 +102,9 @@ class BotClient:
             parse_mode=parse_mode,
         )
 
+    def delete_message(self, chat_id: int | str, message_id: int):
+        return self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+
     def answer_callback(self, callback_query_id: str, text: str | None = None):
         return self.call(
             "answerCallbackQuery", callback_query_id=callback_query_id, text=text

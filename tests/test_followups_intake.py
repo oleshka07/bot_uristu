@@ -150,3 +150,142 @@ def test_brief_formatting(client):
         assert "Синк по проєкту" in text
         assert "Olha" in text and "CTO · Acme" in text
         assert "meet.google.com" in text
+
+
+def test_closer_message_logged_but_not_drafted(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.contacts.models import Contact
+    from app.modules.telegram_bot.models import TelegramDraft
+    from test_telegram_bot import _business_update
+
+    fake = FakeClient()
+    update = _business_update(chat_id=555100, text="Ок, дякую! 🙏", msg_id=71)
+    dispatch(fake, update)
+
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as db:
+        c = db.scalar(select(Contact).where(Contact.telegram_chat_id == 555100))
+        assert c is not None and len(c.interactions) == 1  # logged for history
+        assert db.scalar(select(TelegramDraft)) is None    # but no draft
+    assert fake.sent == []  # and no admin preview — silence is golden
+
+
+def test_card_deleted_after_skip(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.telegram_bot.models import TelegramDraft
+    from test_outreach_queue import _seed_connection, _seed_due_contact
+
+    with SessionLocal() as db:
+        _seed_connection(db)
+        _seed_due_contact(db, "Znyk", 556000, days_ago=90)
+
+    fake = FakeClient()
+    dispatch(fake, {"update_id": 1, "callback_query": {"id": "cb", "data": "q:start"}})
+    with SessionLocal() as db:
+        d = db.scalar(select(TelegramDraft))
+        d_id, d_admin = d.id, d.admin_message_id
+
+    dispatch(
+        fake,
+        {
+            "update_id": 2,
+            "callback_query": {
+                "id": "cb2",
+                "data": f"d:k:{d_id}",
+                "message": {"chat": {"id": 42}, "message_id": d_admin, "text": "card"},
+            },
+        },
+    )
+    assert {"chat_id": 42, "message_id": d_admin} in fake.deleted
+
+
+def test_contact_link_prefers_username(client):
+    from app.core.database import SessionLocal
+    from app.modules.contacts.models import Contact
+    from app.modules.telegram_bot.handlers import _contact_link
+
+    with SessionLocal() as db:
+        c = Contact(first_name="Ліза", telegram="@koshelizik", telegram_chat_id=1)
+        db.add(c); db.commit(); db.refresh(c)
+        assert 'href="https://t.me/koshelizik"' in _contact_link(c)
+
+        c2 = Contact(first_name="БезЮзернейма", telegram_chat_id=77)
+        db.add(c2); db.commit(); db.refresh(c2)
+        assert 'tg://user?id=77' in _contact_link(c2)
+
+
+def test_channels_reply_saves_parsed_channels(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.telegram_bot.models import TelegramDraft
+    from test_outreach_queue import _seed_connection, _seed_due_contact
+
+    with SessionLocal() as db:
+        _seed_connection(db)
+        cid = _seed_due_contact(db, "Kanaly", 557000, days_ago=90)
+
+    fake = FakeClient()
+    dispatch(fake, {"update_id": 1, "callback_query": {"id": "cb", "data": "q:start"}})
+    with SessionLocal() as db:
+        d_id = db.scalar(select(TelegramDraft)).id
+
+    # Press 📇 Контакти → channels message arrives; remember its id.
+    dispatch(
+        fake,
+        {"update_id": 2, "callback_query": {"id": "cb2", "data": f"d:c:{d_id}", "message": {}}},
+    )
+    channels_msg_id = fake.sent[-1]["message_id"] if "message_id" in fake.sent[-1] else None
+    # FakeClient.send_message returns message_id via result; find it in mapping:
+    from app.modules.telegram_bot.handlers import _channel_msgs
+    channels_msg_id = next(iter(_channel_msgs))
+
+    # Reply with an instagram link + email + phone.
+    dispatch(
+        fake,
+        {
+            "update_id": 3,
+            "message": {
+                "chat": {"id": 42},
+                "message_id": 999,
+                "reply_to_message": {"message_id": channels_msg_id},
+                "text": "instagram.com/kanaly.ig kanaly@mail.com +420777123456",
+            },
+        },
+    )
+    with SessionLocal() as db:
+        from app.modules.contacts.models import Contact
+        c = db.get(Contact, cid)
+        assert c.instagram_url == "https://instagram.com/kanaly.ig"
+        assert c.email == "kanaly@mail.com"
+        assert c.phone == "+420777123456"
+    assert any("Зберіг" in s["text"] for s in fake.sent)
+
+
+def test_importance_orders_queue(client):
+    from app.core.database import SessionLocal
+    from test_outreach_queue import _seed_due_contact
+    from app.modules.telegram_bot import service as svc
+
+    with SessionLocal() as db:
+        shallow = _seed_due_contact(db, "Odnorazovy", 558001, days_ago=300)
+        deep = _seed_due_contact(db, "Blyzkyi", 558002, days_ago=60)
+        # Deep dialogue history → derived importance beats bigger overdue.
+        for i in range(20):
+            _add_msg(db, deep, "inbound" if i % 2 else "outbound", days_ago=70 + i)
+
+        nxt = svc.next_outreach_contact(db)
+        assert nxt is not None
+        contact, _ = nxt
+        assert contact.first_name == "Blyzkyi"

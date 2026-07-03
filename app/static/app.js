@@ -498,6 +498,13 @@ function openContactForm(c = null) {
         <label>Facebook URL<input name="facebook_url" value="${v("facebook_url")}" /></label>
         <label>Twitter/X URL<input name="twitter_url" value="${v("twitter_url")}" /></label>
         <label>Тон спілкування<input name="tone" value="${v("tone")}" placeholder="дружній / діловий" /></label>
+        <label>Важливість
+          <select name="importance">
+            <option value="0" ${!c || !c.importance ? "selected" : ""}>Авто (за історією)</option>
+            <option value="3" ${c?.importance === 3 ? "selected" : ""}>⭐ Висока</option>
+            <option value="2" ${c?.importance === 2 ? "selected" : ""}>Звичайна</option>
+            <option value="1" ${c?.importance === 1 ? "selected" : ""}>Низька</option>
+          </select></label>
         <label>Стоп-лист
           <select name="do_not_contact">
             <option value="false" ${c?.do_not_contact ? "" : "selected"}>Ні — пропонувати</option>
@@ -519,6 +526,7 @@ function openContactForm(c = null) {
     for (const [k, val] of fd.entries()) {
       if (k === "tags") body.tags = val.split(",").map((s) => s.trim()).filter(Boolean);
       else if (k === "do_not_contact") body.do_not_contact = val === "true";
+      else if (k === "importance") body.importance = parseInt(val, 10);
       else if (val === "") body[k] = null;
       else body[k] = val;
     }

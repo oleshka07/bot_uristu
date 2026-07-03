@@ -59,7 +59,16 @@ def build_dashboard(db: Session) -> schemas.Dashboard:
 
     # ── Daily suggestions: most overdue, weighted by how cold they are ───
     due = [c for c in contacts if warmth.is_due(c) and not c.do_not_contact]
-    due.sort(key=lambda c: (warmth.overdue_ratio(c), 100 - c.warmth_score), reverse=True)
+    from app.modules.telegram_bot.service import effective_importance
+
+    due.sort(
+        key=lambda c: (
+            effective_importance(c),
+            warmth.overdue_ratio(c),
+            100 - c.warmth_score,
+        ),
+        reverse=True,
+    )
     suggestions: list[schemas.SuggestedContact] = []
     for c in due[: settings.daily_suggestions]:
         elapsed = round(warmth.days_since_last_contact(c))

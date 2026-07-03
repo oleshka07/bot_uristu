@@ -415,7 +415,9 @@ def draft_reply(contact: models.Contact, incoming_text: str) -> str | None:
         "в історії та копіюй його стиль, лексику, довжину речень і емодзі. "
         "1–3 речення, без формальних привітань і підписів, природна "
         "месенджерна мова. Відповідай МОВОЮ співрозмовника. Верни ЛИШЕ текст "
-        "повідомлення, без лапок і пояснень."
+        "повідомлення, без лапок і пояснень. ВАЖЛИВО: якщо нове повідомлення — "
+        "це лише ввічливе завершення розмови (подяка, прощання, 'ок', смайлик), "
+        "на яке відповідь не потрібна, поверни рівно [SKIP] і нічого більше."
     )
     style = _style_context(contact)
     prompt = (
@@ -609,6 +611,70 @@ def search_network(query: str, corpus: list[str]) -> list[dict] | None:
     except Exception as exc:  # pragma: no cover - network
         logger.warning("search_network failed: %s", exc)
     return None
+
+
+_CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "email": {"type": "string"},
+        "phone": {"type": "string"},
+        "company": {"type": "string"},
+        "position": {"type": "string"},
+        "website_url": {"type": "string"},
+        "linkedin_url": {"type": "string"},
+        "instagram_url": {"type": "string"},
+        "telegram": {"type": "string"},
+    },
+    "required": [
+        "email", "phone", "company", "position",
+        "website_url", "linkedin_url", "instagram_url", "telegram",
+    ],
+    "additionalProperties": False,
+}
+
+
+def parse_business_card(image: bytes, mime: str = "image/jpeg") -> dict | None:
+    """Read a business-card photo (Claude vision) into contact channels.
+    Missing fields come back as empty strings; None when AI is off/fails."""
+    import base64
+
+    client = _get_client()
+    if client is None or not image:
+        return None
+    try:
+        resp = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=600,
+            system=(
+                "Ти читаєш фото візитки. Витягни контактні дані точно як "
+                "надруковано. Поля, яких немає — порожній рядок. "
+                "Respond with JSON only."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": base64.b64encode(image).decode(),
+                            },
+                        },
+                        {"type": "text", "text": "Зчитай контакти з візитки."},
+                    ],
+                }
+            ],
+            output_config={
+                "format": {"type": "json_schema", "schema": _CARD_SCHEMA}
+            },
+        )
+        data = _extract_json(resp)
+        return data if isinstance(data, dict) else None
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("parse_business_card failed: %s", exc)
+        return None
 
 
 _TRANSLATE_LANGS = {

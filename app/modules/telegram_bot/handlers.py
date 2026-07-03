@@ -65,11 +65,19 @@ def _translate_keyboard(draft_id: int) -> dict:
 
 
 def _contact_link(contact) -> str:
-    """Clickable name that opens the person's profile/chat in Telegram."""
+    """Clickable name that opens the person's chat: t.me/username is the
+    reliable path (tg://user?id renders unclickable for unknown users)."""
     name = _esc(contact.full_name)
+    handle = (contact.telegram or "").strip().lstrip("@")
+    if handle and " " not in handle and "://" not in handle:
+        return f'<a href="https://t.me/{_esc(handle)}">{name}</a>'
     if contact.telegram_chat_id:
         return f'<a href="tg://user?id={contact.telegram_chat_id}">{name}</a>'
     return name
+
+
+# Channels-message id → contact id, so a reply to it saves new channels.
+_channel_msgs: dict[int, int] = {}
 
 
 def _channels_text(contact, draft_text: str) -> str:
@@ -100,6 +108,11 @@ def _channels_text(contact, draft_text: str) -> str:
         lines.append("")
         lines.append("Повідомлення (тапни, щоб скопіювати):")
         lines.append(f"<code>{_esc(draft_text)}</code>")
+    lines.append("")
+    lines.append(
+        "<i>↩️ Reply на це повідомлення: email / телефон / лінк на соцмережу / "
+        "фото візитки — збережу в картку контакту.</i>"
+    )
     return "\n".join(lines)
 
 
@@ -112,6 +125,8 @@ def _outreach_card(contact, draft) -> str:
         f" · {_esc(contact.relationship_type.value)}"
         f" · {_esc(contact.warmth_status)} {round(contact.warmth_score)}"
     )
+    if service.effective_importance(contact) >= 3:
+        head += " · ⭐ важливий"
     lines = [head, "", f"📊 <b>Чому зараз:</b> {_esc(draft.incoming_text)}"]
 
     last = next((i for i in contact.interactions if i.summary), None)
@@ -286,6 +301,8 @@ def handle_business_message(client, msg: dict) -> None:
             username=sender.get("username") or chat.get("username"),
             business_connection_id=bc_id,
         )
+        if draft is None:
+            return  # conversation-ender: logged, no reply needed
         if admin:
             sent = client.send_message(
                 admin,
@@ -336,7 +353,14 @@ def handle_callback(client, cb: dict) -> None:
             contact = db.get(Contact, draft.contact_id)
             client.answer_callback(cb_id)
             if contact and admin:
-                client.send_message(admin, _channels_text(contact, draft.draft_text))
+                sent = client.send_message(
+                    admin, _channels_text(contact, draft.draft_text)
+                )
+                if sent:
+                    _channel_msgs[sent.get("message_id", 0)] = contact.id
+                    if len(_channel_msgs) > 200:
+                        for k in list(_channel_msgs)[:100]:
+                            _channel_msgs.pop(k, None)
             return
         if action == "t":
             contact = db.get(Contact, draft.contact_id)
@@ -382,14 +406,9 @@ def handle_callback(client, cb: dict) -> None:
             if contact:
                 service.stop_list(db, contact)
             service.mark(db, draft, DraftStatus.skipped)
-            client.answer_callback(cb_id, "У стоп-листі 🚫")
+            client.answer_callback(cb_id, "У стоп-листі 🚫 (повернути — у веб-UI)")
             if msg:
-                client.edit_message_text(
-                    msg["chat"]["id"],
-                    msg["message_id"],
-                    (msg.get("text") or "") + "\n\n🚫 <b>У стоп-листі</b> "
-                    "(повернути можна у веб-інтерфейсі)",
-                )
+                client.delete_message(msg["chat"]["id"], msg["message_id"])
             if is_outreach and admin:
                 _send_next_outreach_card(client, db, admin)
             return
@@ -398,31 +417,19 @@ def handle_callback(client, cb: dict) -> None:
             ok = service.approve_and_send(db, client, draft)
             client.answer_callback(cb_id, "Надіслано ✅" if ok else "Помилка надсилання")
             if ok and msg:
-                client.edit_message_text(
-                    msg["chat"]["id"],
-                    msg["message_id"],
-                    (msg.get("text") or "") + "\n\n✅ <b>Надіслано</b>",
-                )
+                client.delete_message(msg["chat"]["id"], msg["message_id"])
             handled = ok
         elif action == "m":
             service.mark(db, draft, DraftStatus.manual)
             client.answer_callback(cb_id, "Ок, відповідай сам")
             if msg:
-                client.edit_message_text(
-                    msg["chat"]["id"],
-                    msg["message_id"],
-                    (msg.get("text") or "") + "\n\n✋ <b>Вручну</b>",
-                )
+                client.delete_message(msg["chat"]["id"], msg["message_id"])
             handled = True
         elif action == "k":
             service.mark(db, draft, DraftStatus.skipped)
             client.answer_callback(cb_id, "Пропущено")
             if msg:
-                client.edit_message_text(
-                    msg["chat"]["id"],
-                    msg["message_id"],
-                    (msg.get("text") or "") + "\n\n⏭ <b>Пропущено</b>",
-                )
+                client.delete_message(msg["chat"]["id"], msg["message_id"])
             handled = True
         else:
             client.answer_callback(cb_id)
@@ -459,6 +466,11 @@ def handle_admin_message(client, msg: dict) -> None:
                 return
         if not instruction:
             return
+        # Reply to a 📇 channels message → save new channels to the contact.
+        if reply_to in _channel_msgs:
+            _handle_channel_reply(client, admin, _channel_msgs[reply_to], msg)
+            return
+
         with SessionLocal() as db:
             draft = service.find_pending_by_admin_message(db, reply_to)
             if draft is None:
@@ -508,6 +520,55 @@ def handle_admin_message(client, msg: dict) -> None:
     # Plain text = natural-language search over the network.
     if text.strip():
         _handle_network_search(client, admin, text.strip())
+
+
+def _handle_channel_reply(client, admin: int, contact_id: int, msg: dict) -> None:
+    """Reply to a channels card: text with links/email/phone, or a
+    business-card photo — everything lands in the contact record."""
+    with SessionLocal() as db:
+        contact = db.get(Contact, contact_id)
+        if contact is None:
+            return
+
+        parsed: dict = {}
+        photo = msg.get("photo") or []
+        document = msg.get("document") or {}
+        if photo or str(document.get("mime_type", "")).startswith("image/"):
+            file_id = (
+                photo[-1].get("file_id", "") if photo else document.get("file_id", "")
+            )
+            image = client.download_file(file_id) if file_id else None
+            if image:
+                from app.modules.insights import ai as _ai
+
+                parsed = _ai.parse_business_card(image) or {}
+            if not parsed:
+                client.send_message(
+                    admin,
+                    "Не зміг розпізнати візитку. Надішли дані текстом — "
+                    "email, телефон чи лінк.",
+                )
+                return
+        else:
+            text = msg.get("text") or msg.get("caption") or ""
+            if not text and msg.get("voice"):
+                audio = client.download_file(msg["voice"].get("file_id", ""))
+                text = transcribe_ogg(audio) if audio else ""
+            parsed = service.parse_channel_text(text or "")
+
+        saved = service.apply_channels(db, contact, parsed)
+        if saved:
+            client.send_message(
+                admin,
+                f"✅ Зберіг для <b>{_contact_link(contact)}</b>: "
+                + ", ".join(saved),
+            )
+        else:
+            client.send_message(
+                admin,
+                "Не знайшов у повідомленні email/телефону/лінків. "
+                "Приклад: instagram.com/nick, +420123456789, nick@mail.com",
+            )
 
 
 def _handle_voice_intake(client, admin: int, transcript: str) -> None:

@@ -11,6 +11,7 @@ class FakeClient:
     def __init__(self):
         self.sent = []
         self.edited = []
+        self.deleted = []
         self.callbacks = []
         self._next_message_id = 100
 
@@ -24,6 +25,10 @@ class FakeClient:
     def edit_message_text(self, chat_id, message_id, text, **kw):
         self.edited.append({"chat_id": chat_id, "message_id": message_id, "text": text})
         return {"message_id": message_id}
+
+    def delete_message(self, chat_id, message_id):
+        self.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return True
 
     def answer_callback(self, cb_id, text=None):
         self.callbacks.append(text)
