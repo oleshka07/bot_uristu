@@ -289,3 +289,87 @@ def test_importance_orders_queue(client):
         assert nxt is not None
         contact, _ = nxt
         assert contact.first_name == "Blyzkyi"
+
+
+class _ChatClient(FakeClient):
+    """FakeClient that answers getChat with canned profiles by chat_id."""
+
+    def __init__(self, profiles):
+        super().__init__()
+        self.profiles = profiles
+
+    def get_chat(self, chat_id):
+        return self.profiles.get(chat_id)
+
+
+def test_enrich_from_telegram_fills_username_and_birthday(client):
+    from app.core.database import SessionLocal
+    from app.modules.telegram_bot import service
+    from app.modules.contacts.models import Contact
+
+    with SessionLocal() as db:
+        c = Contact(first_name="Владислава", telegram_chat_id=90001)
+        db.add(c); db.commit(); db.refresh(c)
+
+        cl = _ChatClient({
+            90001: {
+                "id": 90001,
+                "username": "Vladislavaklim",
+                "bio": "Будую і надихаю",
+                "birthdate": {"day": 7, "month": 3, "year": 1979},
+            }
+        })
+        changed = service.enrich_from_telegram(db, cl, c)
+        assert changed is True
+        db.refresh(c)
+        assert c.telegram == "@Vladislavaklim"
+        assert c.birth_date.day == 7 and c.birth_date.month == 3
+        assert c.notes == "Будую і надихаю"
+
+
+def test_incoming_message_backfills_username_on_export_contact(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+    from app.modules.contacts.models import Contact
+    from test_telegram_bot import _business_update
+
+    with SessionLocal() as db:
+        # Export-imported contact: chat_id known, no username → not clickable.
+        db.add(Contact(first_name="Владислава", telegram_chat_id=555001))
+        db.commit()
+
+    fake = FakeClient()
+    dispatch(fake, _business_update(chat_id=555001, text="Привіт, є хвилинка?", msg_id=5))
+
+    with SessionLocal() as db:
+        c = db.scalar(select(Contact).where(Contact.telegram_chat_id == 555001))
+        # Username captured live from the incoming update → now clickable.
+        assert c.telegram == "@oleh_test"
+
+
+def test_enrich_command_reports_progress(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    from app.core.database import SessionLocal
+    from app.modules.contacts.models import Contact
+
+    with SessionLocal() as db:
+        db.add(Contact(first_name="A", telegram_chat_id=91001))
+        db.add(Contact(first_name="B", telegram_chat_id=91002))
+        db.commit()
+
+    cl = _ChatClient({
+        91001: {"id": 91001, "username": "aaa"},
+        91002: {"id": 91002},  # no username available
+    })
+    dispatch(cl, {"update_id": 1, "message": {"chat": {"id": 42}, "text": "/enrich"}})
+    assert any("Оновив 1" in s["text"] for s in cl.sent)
+
+    from sqlalchemy import select
+    with SessionLocal() as db:
+        a = db.scalar(select(Contact).where(Contact.telegram_chat_id == 91001))
+        assert a.telegram == "@aaa"

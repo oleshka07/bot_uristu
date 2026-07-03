@@ -192,6 +192,13 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
         )
         return False
     contact, reason = nxt
+    # Make the card clickable/complete: pull username+birthday from Telegram
+    # if we still don't have a handle for this export-imported contact.
+    if not (contact.telegram or "").strip():
+        try:
+            service.enrich_from_telegram(db, client, contact)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("enrich failed for %s: %s", contact.id, exc)
     draft = service.create_outreach_draft(db, contact, connection, reason)
     sent = client.send_message(
         admin,
@@ -664,6 +671,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 admin,
                 "<b>Networking AI</b>\n"
                 "/queue — почати обхід (кому написати, з чернетками)\n"
+                "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n\n"
@@ -676,6 +684,29 @@ def _handle_command(client, admin: int, text: str) -> None:
             )
         elif cmd == "queue":
             _send_next_outreach_card(client, db, admin)
+        elif cmd == "enrich":
+            pending = service.pending_enrichment(db, limit=25)
+            if not pending:
+                client.send_message(
+                    admin, "Усі доступні контакти вже мають юзернейми ✅"
+                )
+                return
+            done = 0
+            for c in pending:
+                try:
+                    if service.enrich_from_telegram(db, client, c):
+                        done += 1
+                except Exception:
+                    pass
+            remaining = len(service.pending_enrichment(db, limit=1000))
+            client.send_message(
+                admin,
+                f"🔄 Оновив {done} із {len(pending)} (username/ДН/біо з Telegram). "
+                f"Ще без юзернейма: ~{remaining}. Запусти /enrich ще раз для наступної пачки."
+                + ("" if done else "\n\n⚠️ Нічого не витягнулось — можливо, getChat "
+                   "не бачить цих людей (бот з ними ще не взаємодіяв). "
+                   "Тоді юзернейми підтягнуться самі, коли вони тобі напишуть."),
+            )
         elif cmd in ("today", "network", "digest"):
             client.send_message(
                 admin,

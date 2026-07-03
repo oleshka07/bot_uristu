@@ -62,6 +62,7 @@ def find_or_create_contact(
     O(1) by id. Returns (contact, is_new)."""
     contact = db.scalar(select(Contact).where(Contact.telegram_chat_id == chat_id))
     if contact:
+        _backfill_identity(db, contact, first_name, last_name, username)
         return contact, False
 
     if username:
@@ -70,7 +71,7 @@ def find_or_create_contact(
         )
         if contact:
             contact.telegram_chat_id = chat_id
-            db.commit()
+            _backfill_identity(db, contact, first_name, last_name, username)
             return contact, False
 
     contact = Contact(
@@ -91,6 +92,91 @@ def find_or_create_contact(
     db.refresh(contact)
     logger.info("New contact from Telegram DM: %s (%s)", contact.full_name, chat_id)
     return contact, True
+
+
+def _backfill_identity(
+    db: Session,
+    contact: Contact,
+    first_name: str | None,
+    last_name: str | None,
+    username: str | None,
+) -> None:
+    """Fill in missing username/name from a live Telegram update — makes
+    export-imported contacts clickable the moment they write to you."""
+    changed = False
+    if username and not (contact.telegram or "").strip():
+        contact.telegram = f"@{username}"
+        changed = True
+    if first_name and contact.first_name in ("Unknown", "", None):
+        contact.first_name = first_name
+        changed = True
+    if last_name and not contact.last_name:
+        contact.last_name = last_name
+        changed = True
+    if changed:
+        db.commit()
+
+
+def _birthdate_from_getchat(info: dict):
+    """Bot API birthdate object {day, month, year?} -> date (year defaults
+    to a leap-safe placeholder when the person hid the year)."""
+    from datetime import date
+
+    bd = info.get("birthdate") or {}
+    day, month = bd.get("day"), bd.get("month")
+    if not (day and month):
+        return None
+    year = bd.get("year") or 1904
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def enrich_from_telegram(db: Session, client, contact: Contact) -> bool:
+    """Pull username / birthday / bio from Telegram (getChat) into the
+    contact. Returns True if anything was saved. Best-effort: getChat may
+    not see a user the bot has never interacted with."""
+    if not contact.telegram_chat_id:
+        return False
+    info = client.get_chat(contact.telegram_chat_id)
+    if not isinstance(info, dict):
+        return False
+    changed = False
+    username = info.get("username")
+    if username and not (contact.telegram or "").strip():
+        contact.telegram = f"@{username}"
+        changed = True
+    if not contact.birth_date:
+        bd = _birthdate_from_getchat(info)
+        if bd:
+            contact.birth_date = bd
+            changed = True
+    bio = (info.get("bio") or "").strip()
+    if bio and not (contact.notes or "").strip():
+        contact.notes = bio
+        changed = True
+    if changed:
+        db.commit()
+        db.refresh(contact)
+    return changed
+
+
+def pending_enrichment(db: Session, limit: int = 25) -> list[Contact]:
+    """Contacts reachable in Telegram but still without a username."""
+    rows = db.scalars(
+        select(Contact).where(
+            Contact.telegram_chat_id.is_not(None),
+            Contact.do_not_contact.is_(False),
+        )
+    ).unique()
+    out = []
+    for c in rows:
+        if not (c.telegram or "").strip():
+            out.append(c)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ── Conversation closers ─────────────────────────────────────────────────────
