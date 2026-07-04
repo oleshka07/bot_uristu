@@ -110,6 +110,10 @@ class BotClient:
         photo. Works for chats the bot can see; returns None otherwise."""
         return self.call("getChat", chat_id=chat_id)
 
+    def set_my_commands(self, commands: list[dict]):
+        """Replace the bot's slash-command menu (the '/' button list)."""
+        return self.call("setMyCommands", commands=commands)
+
     def answer_callback(self, callback_query_id: str, text: str | None = None):
         return self.call(
             "answerCallbackQuery", callback_query_id=callback_query_id, text=text

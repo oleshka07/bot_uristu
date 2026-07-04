@@ -25,6 +25,19 @@ def _esc(s: str | None) -> str:
     return html.escape(s or "")
 
 
+# Reply-keyboard buttons the old Chater bot left stuck in the chat. Tapping
+# one used to open Chater's planner — now we clear the keyboard and help.
+_LEGACY_BUTTONS = {
+    "задачі", "огляд", "промпти", "налаштування", "меню",
+    "📋 задачі", "📊 огляд", "📝 промпти", "⚙️ налаштування", "☰ меню",
+}
+_REMOVE_KEYBOARD = {"remove_keyboard": True}
+
+
+def _is_legacy_button(text: str) -> bool:
+    return text.strip().casefold() in _LEGACY_BUTTONS
+
+
 def _admin_id() -> int | None:
     try:
         return int(settings.telegram_chat_id) if settings.telegram_chat_id else None
@@ -506,6 +519,15 @@ def handle_admin_message(client, msg: dict) -> None:
                     service.set_admin_message(db, draft, sent.get("message_id", 0))
         return
 
+    if _is_legacy_button(text):
+        client.send_message(
+            admin,
+            "Старе меню Chater більше не використовується — прибрав клавіатуру. "
+            "Актуальні команди: /help",
+            reply_markup=_REMOVE_KEYBOARD,
+        )
+        return
+
     if text.startswith("/"):
         _handle_command(client, admin, text)
         return
@@ -666,7 +688,7 @@ def _handle_command(client, admin: int, text: str) -> None:
     cmd = cmd.lower().lstrip("/").split("@")[0]
 
     with SessionLocal() as db:
-        if cmd in ("start", "help"):
+        if cmd in ("start", "help", "menu"):
             client.send_message(
                 admin,
                 "<b>Networking AI</b>\n"
@@ -681,8 +703,9 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "робить фінтех...»)\n\n"
                 "Вхідні з Telegram Business приходять сюди з чернеткою "
                 "відповіді: ✅ надіслати · reply — скоригувати.",
+                reply_markup=_REMOVE_KEYBOARD,
             )
-        elif cmd == "queue":
+        elif cmd in ("queue", "obhid"):
             _send_next_outreach_card(client, db, admin)
         elif cmd == "enrich":
             pending = service.pending_enrichment(db, limit=25)
@@ -707,7 +730,9 @@ def _handle_command(client, admin: int, text: str) -> None:
                    "не бачить цих людей (бот з ними ще не взаємодіяв). "
                    "Тоді юзернейми підтягнуться самі, коли вони тобі напишуть."),
             )
-        elif cmd in ("today", "network", "digest"):
+        elif cmd == "overdue":
+            _handle_command(client, admin, "/due")
+        elif cmd in ("today", "network", "digest", "weekly", "monthly"):
             client.send_message(
                 admin,
                 tg.digest_text(dashboard.build_dashboard(db)),

@@ -373,3 +373,19 @@ def test_enrich_command_reports_progress(client, monkeypatch):
     with SessionLocal() as db:
         a = db.scalar(select(Contact).where(Contact.telegram_chat_id == 91001))
         assert a.telegram == "@aaa"
+
+
+def test_legacy_chater_button_clears_keyboard(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    fake = FakeClient()
+    dispatch(
+        fake,
+        {"update_id": 1, "message": {"chat": {"id": 42}, "text": "📊 Огляд"}},
+    )
+    sent = fake.sent[-1]
+    assert sent.get("reply_markup", {}).get("remove_keyboard") is True
+    assert "Chater" in sent["text"]
+    # It must NOT be treated as a network-search query.
+    assert "🔎" not in sent["text"]

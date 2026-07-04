@@ -37,6 +37,17 @@ def run() -> None:
         "Telegram bot polling started as @%s (business updates on).",
         (me or {}).get("username", "?"),
     )
+    # Replace whatever command menu the old Chater bot left on this token.
+    client.set_my_commands(
+        [
+            {"command": "queue", "description": "Кому написати сьогодні"},
+            {"command": "today", "description": "Дайджест дня"},
+            {"command": "due", "description": "Прострочені контакти"},
+            {"command": "find", "description": "Пошук контакту за іменем"},
+            {"command": "enrich", "description": "Підтягнути дані з Telegram"},
+            {"command": "help", "description": "Довідка"},
+        ]
+    )
     offset: int | None = None
     while True:
         try:
