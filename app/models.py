@@ -20,6 +20,7 @@ from app.modules.insights.models import (  # noqa: F401
     LifeEventStatus,
     StyleProfile,
 )
+from app.modules.goals.models import Goal, GoalStatus, goal_contacts  # noqa: F401
 from app.modules.integrations.models import IntegrationToken  # noqa: F401
 from app.modules.integrations.social.models import SocialSnapshot  # noqa: F401
 from app.modules.interactions.models import (  # noqa: F401

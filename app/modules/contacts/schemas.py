@@ -136,6 +136,7 @@ class ContactDetail(ContactBase):
     life_events: list[LifeEventOut] = Field(default_factory=list)
     social_snapshots: list[SocialSnapshotOut] = Field(default_factory=list)
     facts: list[ContactFactOut] = Field(default_factory=list)
+    goals: list[dict] = Field(default_factory=list)
     days_since_contact: int = 0
     is_due: bool = False
 
@@ -167,6 +168,10 @@ class ContactDetail(ContactBase):
                 ContactFactOut.model_validate(f)
                 for f in c.facts
                 if f.is_current
+            ],
+            goals=[
+                {"id": g.id, "title": g.title, "status": g.status.value}
+                for g in getattr(c, "goals", [])
             ],
             days_since_contact=round(warmth.days_since_last_contact(c)),
             is_due=warmth.is_due(c),

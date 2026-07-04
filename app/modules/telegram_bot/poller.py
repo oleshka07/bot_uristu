@@ -43,6 +43,7 @@ def run() -> None:
             {"command": "queue", "description": "Кому написати сьогодні"},
             {"command": "today", "description": "Дайджест дня"},
             {"command": "due", "description": "Прострочені контакти"},
+            {"command": "goals", "description": "Активні цілі"},
             {"command": "find", "description": "Пошук контакту за іменем"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},

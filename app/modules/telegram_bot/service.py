@@ -392,8 +392,13 @@ def _reachable(db: Session):
 
 
 def effective_importance(contact: Contact) -> int:
-    """Explicit importance (1..3) or, when unset (0), derived from dialogue
-    depth — long real conversations outrank one-off exchanges."""
+    """Explicit importance (1..3) or, when unset (0), derived from goal links
+    and dialogue depth — people tied to an active goal, and long real
+    conversations, outrank one-off exchanges."""
+    from app.modules.goals.service import has_active_goal
+
+    if has_active_goal(contact):
+        return max(contact.importance, 3)
     if contact.importance:
         return contact.importance
     n = len(contact.interactions)

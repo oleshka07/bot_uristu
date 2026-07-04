@@ -142,6 +142,12 @@ def _outreach_card(contact, draft) -> str:
         head += " · ⭐ важливий"
     lines = [head, "", f"📊 <b>Чому зараз:</b> {_esc(draft.incoming_text)}"]
 
+    from app.modules.goals.service import active_goals_for_contact
+
+    goals = active_goals_for_contact(contact)
+    if goals:
+        lines.append("🎯 <b>Ціль:</b> " + ", ".join(_esc(g.title) for g in goals[:2]))
+
     last = next((i for i in contact.interactions if i.summary), None)
     if last:
         when = last.occurred_at.strftime("%d.%m.%Y")
@@ -693,6 +699,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 admin,
                 "<b>Networking AI</b>\n"
                 "/queue — почати обхід (кому написати, з чернетками)\n"
+                "/goals — активні цілі та причетні люди\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
                 "/due — всі прострочені\n"
@@ -730,6 +737,18 @@ def _handle_command(client, admin: int, text: str) -> None:
                    "не бачить цих людей (бот з ними ще не взаємодіяв). "
                    "Тоді юзернейми підтягнуться самі, коли вони тобі напишуть."),
             )
+        elif cmd == "goals":
+            from app.modules.goals.service import list_goals
+            from app.modules.goals.models import GoalStatus
+
+            goals = list_goals(db, status=GoalStatus.active)
+            if not goals:
+                client.send_message(admin, "Немає активних цілей. Створи у веб-інтерфейсі (Goals).")
+                return
+            lines = ["🎯 <b>Активні цілі</b>"]
+            for g in goals:
+                lines.append(f"• {_esc(g.title)} — {len(g.contacts)} контакт(ів)")
+            client.send_message(admin, "\n".join(lines))
         elif cmd == "overdue":
             _handle_command(client, admin, "/due")
         elif cmd in ("today", "network", "digest", "weekly", "monthly"):

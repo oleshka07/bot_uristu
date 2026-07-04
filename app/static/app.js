@@ -81,6 +81,7 @@ function setView(view) {
     b.classList.toggle("active", b.dataset.view === view));
   if (view === "dashboard") renderDashboard();
   else if (view === "contacts") renderContacts();
+  else if (view === "goals") renderGoals();
   else if (view === "integrations") renderIntegrations();
 }
 document.querySelectorAll(".nav-item").forEach((b) =>
@@ -257,6 +258,9 @@ async function openContactDetail(id, tab = "overview") {
           <span class="muted">${c.is_due ? "⚠ due now" : `last contact ${c.days_since_contact}d ago`}</span>
         </div>
         <div class="tags mt">${c.tags.map((t) => `<span class="pill accent">${esc(t)}</span>`).join("")}</div>
+        <div class="tags mt">${(c.goals || []).map((g) =>
+          `<span class="pill" style="background:#7c5cff22">🎯 ${esc(g.title)}${g.status !== "active" ? " (" + esc(g.status) + ")" : ""} <a data-goalunlink="${g.id}" style="cursor:pointer">✕</a></span>`).join("")}
+          <button class="btn small" id="link-goal">🎯 + ціль</button></div>
       </div>
     </div>
     <div class="flex mb" style="gap:8px">
@@ -278,6 +282,12 @@ async function openContactDetail(id, tab = "overview") {
   $("#import-btn").addEventListener("click", () => openImportForm(c.id));
   main.querySelectorAll(".tab").forEach((b) =>
     b.addEventListener("click", () => { renderTab(c, b.dataset.tab); main.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b)); }));
+
+  $("#link-goal")?.addEventListener("click", () => linkGoalToContact(c.id));
+  main.querySelectorAll("[data-goalunlink]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/goals/${b.dataset.goalunlink}/contacts/${c.id}`, { method: "DELETE" });
+      openContactDetail(c.id, tab); } catch (e) { toast(e.message, true); }
+  }));
 
   if (c.ai_dossier) $("#ai-area").innerHTML = dossierHtml(c.ai_dossier);
   renderTab(c, tab);
@@ -612,6 +622,103 @@ function confirmDelete(c) {
     try { await api(`/contacts/${c.id}`, { method: "DELETE" }); closeModal(); toast("Contact deleted"); setView("contacts"); }
     catch (e) { toast(e.message, true); }
   });
+}
+
+
+/* ── Goals ───────────────────────────────────────────────── */
+const GOAL_STATUSES = ["active", "paused", "done", "dropped"];
+
+async function renderGoals() {
+  const main = $("#main");
+  main.innerHTML = `<div class="view-head"><h2>Goals</h2>
+    <button class="btn primary" id="new-goal">+ New goal</button></div>
+    <div class="empty"><span class="spinner"></span> Loading…</div>`;
+  $("#new-goal").addEventListener("click", () => openGoalForm());
+  let goals;
+  try { goals = await api("/goals"); } catch (e) { return showError(e); }
+  const body = goals.length ? goals.map((g) => `
+    <div class="card mb">
+      <div class="flex between">
+        <div><h3 class="section-title" style="margin:0">${esc(g.title)}</h3>
+          <div class="muted">${esc(g.status)} · priority ${g.priority}${g.target_date ? " · due " + g.target_date : ""}</div></div>
+        <div class="flex" style="gap:6px">
+          <button class="btn small" data-edit="${g.id}">Edit</button>
+          <button class="btn small danger" data-del="${g.id}">Delete</button>
+        </div>
+      </div>
+      ${g.description ? `<p>${esc(g.description)}</p>` : ""}
+      <div class="tags mt">${(g.contacts || []).map((c) =>
+        `<span class="pill accent" data-goc="${g.id}:${c.id}" title="від’єднати">${esc(c.full_name)} ✕</span>`).join("")
+        || '<span class="muted">Немає прив’язаних контактів</span>'}</div>
+    </div>`).join("")
+    : `<div class="empty">Ще немає цілей. Створи першу — і прив’яжи людей на картці контакту.</div>`;
+  main.querySelector(".empty, .card")?.parentElement;
+  main.insertAdjacentHTML("beforeend", `<div id="goals-body">${body}</div>`);
+  main.querySelector(".empty")?.remove();
+  main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Видалити ціль?")) return;
+    try { await api(`/goals/${b.dataset.del}`, { method: "DELETE" }); renderGoals(); }
+    catch (e) { toast(e.message, true); }
+  }));
+  main.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () =>
+    openGoalForm(goals.find((g) => g.id === Number(b.dataset.edit)))));
+  main.querySelectorAll("[data-goc]").forEach((b) => b.addEventListener("click", async () => {
+    const [gid, cid] = b.dataset.goc.split(":");
+    try { await api(`/goals/${gid}/contacts/${cid}`, { method: "DELETE" }); renderGoals(); }
+    catch (e) { toast(e.message, true); }
+  }));
+}
+
+function openGoalForm(g = null) {
+  openModal(`
+    <h3>${g ? "Edit goal" : "New goal"}</h3>
+    <form id="goal-form">
+      <div class="form-grid">
+        <label class="form-full">Title *<input name="title" required value="${g ? esc(g.title) : ""}" /></label>
+        <label>Status<select name="status">${GOAL_STATUSES.map((s) =>
+          `<option value="${s}" ${g?.status === s ? "selected" : ""}>${titleCase(s)}</option>`).join("")}</select></label>
+        <label>Priority<select name="priority">
+          <option value="3" ${g?.priority === 3 ? "selected" : ""}>High</option>
+          <option value="2" ${!g || g.priority === 2 ? "selected" : ""}>Normal</option>
+          <option value="1" ${g?.priority === 1 ? "selected" : ""}>Low</option></select></label>
+        <label>Target date<input type="date" name="target_date" value="${g?.target_date || ""}" /></label>
+        <label class="form-full">Description<textarea name="description" rows="2">${g ? esc(g.description || "") : ""}</textarea></label>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Cancel</button>
+        <button type="submit" class="btn primary">${g ? "Save" : "Create"}</button></div>
+    </form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#goal-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = {
+      title: fd.get("title"), status: fd.get("status"),
+      priority: parseInt(fd.get("priority"), 10),
+      target_date: fd.get("target_date") || null,
+      description: fd.get("description") || null,
+    };
+    try {
+      if (g) await api(`/goals/${g.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/goals", { method: "POST", body: JSON.stringify(body) });
+      closeModal(); renderGoals();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+async function linkGoalToContact(contactId) {
+  let goals;
+  try { goals = await api("/goals?status=active"); } catch (e) { return toast(e.message, true); }
+  if (!goals.length) return toast("Спершу створи ціль у розділі Goals", true);
+  openModal(`<h3>Прив’язати до цілі</h3>
+    <div class="card">${goals.map((g) =>
+      `<button class="btn block mb" data-g="${g.id}">${esc(g.title)}</button>`).join("")}</div>
+    <div class="modal-actions"><button class="btn" id="m-cancel">Cancel</button></div>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  document.querySelectorAll("[data-g]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/goals/${b.dataset.g}/contacts/${contactId}`, { method: "POST" });
+      closeModal(); toast("Прив’язано"); openContactDetail(contactId); }
+    catch (e) { toast(e.message, true); }
+  }));
 }
 
 /* ── Integrations ──────────────────────────────────────────────────────── */
