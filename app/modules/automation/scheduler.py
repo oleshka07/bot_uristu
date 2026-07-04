@@ -51,6 +51,26 @@ def start() -> None:
             replace_existing=True,
             misfire_grace_time=300,
         )
+    if settings.checkin_enabled:
+        from .reviews import run_midday_checkin
+
+        _scheduler.add_job(
+            run_midday_checkin,
+            CronTrigger(hour=settings.checkin_hour, minute=0),
+            id="midday_checkin",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+    if settings.weekly_review_enabled:
+        from .reviews import run_weekly_review
+
+        _scheduler.add_job(
+            run_weekly_review,
+            CronTrigger(day_of_week="mon", hour=settings.weekly_review_hour, minute=0),
+            id="weekly_review",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     _scheduler.start()
     logger.info(
         "Scheduler started; daily job at %02d:00 server time.",

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     meeting_brief_enabled: bool = True
     meeting_brief_lead_minutes: int = 60
 
+    # Proactive check-ins / reviews to Telegram.
+    checkin_enabled: bool = True
+    checkin_hour: int = 13  # local server hour for the midday nudge
+    weekly_review_enabled: bool = True
+    weekly_review_hour: int = 9  # Monday morning network review
+
     # Daily social sweep: re-scrape socials of the N most-due contacts to
     # detect fresh life events (needs a scraper provider). 0 = off.
     social_sweep_daily: int = 5
