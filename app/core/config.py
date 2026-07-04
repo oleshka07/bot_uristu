@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
+    # Embeddings for semantic search over the network. Uses OpenAI (or Voyage)
+    # — Anthropic has no embeddings API. Disabled if neither key is set.
+    voyage_api_key: str | None = None
+    embeddings_model: str = "text-embedding-3-small"  # OpenAI default (1536 dims)
+
     # Database
     database_url: str = "sqlite:///./networking.db"
 

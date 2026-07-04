@@ -9,6 +9,7 @@ from sqlalchemy.orm import configure_mappers
 
 EXPECTED_TABLES = {
     "business_connections",
+    "contact_embeddings",
     "contact_facts",
     "contact_tags",
     "contacts",

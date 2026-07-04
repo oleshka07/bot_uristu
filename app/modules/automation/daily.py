@@ -84,6 +84,14 @@ def run_daily_job(send_digest: bool = True) -> dict:
         except Exception as exc:  # pragma: no cover
             logger.warning("social sweep failed: %s", exc)
 
+        # Keep the semantic-search index fresh (best effort).
+        try:
+            from app.modules.search import service as search_service
+
+            summary["embedded"] = search_service.embed_pending(db, limit=200)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("embed_pending failed: %s", exc)
+
         data = dashboard.build_dashboard(db)
         summary["due_now"] = data.stats.due_now
 

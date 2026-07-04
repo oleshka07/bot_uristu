@@ -639,7 +639,43 @@ def _handle_network_search(client, admin: int, query: str) -> None:
     from app import crud
     from app.modules.insights import ai as _ai
 
+    from app.modules.search import service as search_service
+
     with SessionLocal() as db:
+        # Semantic first: rank by embedding, then narrow the AI 'why' to the
+        # top candidates (cheaper + better than dumping the whole network).
+        hits = search_service.semantic_search(db, query, k=12)
+        if hits:
+            by_id = {cid: crud.get_contact(db, cid) for cid, _ in hits}
+            by_id = {k: v for k, v in by_id.items() if v is not None}
+            corpus = []
+            for cid, _score in hits:
+                c = by_id.get(cid)
+                if c is None:
+                    continue
+                facts = "; ".join(
+                    f.value for f in getattr(c, "facts", []) if f.is_current
+                )[:200]
+                corpus.append(
+                    f"{c.id} | {c.full_name} | "
+                    f"{' · '.join(filter(None, [c.position, c.company]))} | "
+                    f"{c.location or ''} | {', '.join(t.name for t in c.tags)} | "
+                    f"{facts} | {(c.notes or '')[:120]}"
+                )
+            matches = _ai.search_network(query, corpus)
+            if matches is None:
+                # AI off → return the semantic ranking directly.
+                lines = [f"🔎 <b>«{_esc(query)}»</b> (семантичний пошук)"]
+                for cid, _score in hits[:8]:
+                    c = by_id.get(cid)
+                    if c:
+                        lines.append(f"• {_contact_link(c)}")
+                client.send_message(admin, "\n".join(lines))
+                return
+            _render_search_matches(client, admin, query, matches, by_id)
+            return
+
+        # No embeddings yet → whole-network corpus (or substring if AI off).
         contacts = crud.list_contacts(db, sort="name")
         corpus = []
         by_id = {}
@@ -666,24 +702,25 @@ def _handle_network_search(client, admin: int, query: str) -> None:
                 lines.append(f"• {_contact_link(c)}")
             client.send_message(admin, "\n".join(lines))
             return
-        if not matches:
-            client.send_message(
-                admin, f"У мережі не знайшов нікого під «{_esc(query)}»."
-            )
-            return
-        lines = [f"🔎 <b>«{_esc(query)}»</b>"]
-        for m in matches[:8]:
-            c = by_id.get(m.get("contact_id"))
-            if c is None:
-                continue
-            role = " · ".join(filter(None, [c.position, c.company]))
-            lines.append("")
-            lines.append(
-                f"👤 <b>{_contact_link(c)}</b>"
-                + (f" — {_esc(role)}" if role else "")
-            )
-            lines.append(f"<i>{_esc(m.get('why', ''))}</i>")
-        client.send_message(admin, "\n".join(lines))
+        _render_search_matches(client, admin, query, matches, by_id)
+
+
+def _render_search_matches(client, admin, query, matches, by_id):
+    if not matches:
+        client.send_message(admin, f"У мережі не знайшов нікого під «{_esc(query)}».")
+        return
+    lines = [f"🔎 <b>«{_esc(query)}»</b>"]
+    for m in matches[:8]:
+        c = by_id.get(m.get("contact_id"))
+        if c is None:
+            continue
+        role = " · ".join(filter(None, [c.position, c.company]))
+        lines.append("")
+        lines.append(
+            f"👤 <b>{_contact_link(c)}</b>" + (f" — {_esc(role)}" if role else "")
+        )
+        lines.append(f"<i>{_esc(m.get('why', ''))}</i>")
+    client.send_message(admin, "\n".join(lines))
 
 
 def _handle_command(client, admin: int, text: str) -> None:
@@ -700,6 +737,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "<b>Networking AI</b>\n"
                 "/queue — почати обхід (кому написати, з чернетками)\n"
                 "/goals — активні цілі та причетні люди\n"
+                "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
                 "/due — всі прострочені\n"
@@ -736,6 +774,24 @@ def _handle_command(client, admin: int, text: str) -> None:
                 + ("" if done else "\n\n⚠️ Нічого не витягнулось — можливо, getChat "
                    "не бачить цих людей (бот з ними ще не взаємодіяв). "
                    "Тоді юзернейми підтягнуться самі, коли вони тобі напишуть."),
+            )
+        elif cmd == "embed":
+            from app.modules.search import service as search_service
+            from app.modules.insights import llm as _llm
+
+            if not _llm.embeddings_enabled():
+                client.send_message(
+                    admin,
+                    "Ембединги вимкнені — додай OPENAI_API_KEY (або VOYAGE_API_KEY) у .env.",
+                )
+                return
+            done = search_service.embed_pending(db, limit=200)
+            remaining = search_service.pending_count(db)
+            client.send_message(
+                admin,
+                f"🧠 Проіндексував {done}. Ще без індексу: ~{remaining}. "
+                + ("Готово — семантичний пошук увімкнено." if not remaining
+                   else "Запусти /embed ще раз для наступної пачки."),
             )
         elif cmd == "goals":
             from app.modules.goals.service import list_goals

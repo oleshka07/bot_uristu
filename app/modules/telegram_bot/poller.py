@@ -44,6 +44,7 @@ def run() -> None:
             {"command": "today", "description": "Дайджест дня"},
             {"command": "due", "description": "Прострочені контакти"},
             {"command": "goals", "description": "Активні цілі"},
+            {"command": "embed", "description": "Індексувати мережу для пошуку"},
             {"command": "find", "description": "Пошук контакту за іменем"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},

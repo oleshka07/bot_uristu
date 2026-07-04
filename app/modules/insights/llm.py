@@ -218,3 +218,49 @@ def vision_json(
     return _loads(
         _raw(system, user, max_tokens=max_tokens, schema=schema, image=image, mime=mime)
     )
+
+
+# ── Embeddings (OpenAI / Voyage — Anthropic has no embeddings API) ────────────
+
+
+def embeddings_enabled() -> bool:
+    return bool(settings.openai_api_key or settings.voyage_api_key)
+
+
+def embeddings_model() -> str:
+    return settings.embeddings_model
+
+
+def embed(texts: list[str], *, input_type: str = "document") -> list[list[float]] | None:
+    """Embed a batch of texts. Returns one vector per text, or None on
+    failure / when no embeddings provider is configured."""
+    if not texts:
+        return []
+    try:
+        if settings.openai_api_key:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(
+                    "https://api.openai.com/v1/embeddings",
+                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    json={"model": settings.embeddings_model, "input": texts},
+                )
+                resp.raise_for_status()
+                data = sorted(resp.json()["data"], key=lambda d: d["index"])
+                return [d["embedding"] for d in data]
+        if settings.voyage_api_key:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(
+                    "https://api.voyageai.com/v1/embeddings",
+                    headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
+                    json={
+                        "model": settings.embeddings_model,
+                        "input": texts,
+                        "input_type": input_type,
+                    },
+                )
+                resp.raise_for_status()
+                data = sorted(resp.json()["data"], key=lambda d: d["index"])
+                return [d["embedding"] for d in data]
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("embed failed: %s", exc)
+    return None

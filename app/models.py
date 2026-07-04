@@ -28,6 +28,7 @@ from app.modules.interactions.models import (  # noqa: F401
     Direction,
     Interaction,
 )
+from app.modules.search.models import ContactEmbedding  # noqa: F401
 from app.modules.telegram_bot.models import (  # noqa: F401
     BusinessConnection,
     DraftKind,
