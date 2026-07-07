@@ -18,6 +18,15 @@ from app.integrations import chater, google
 logger = logging.getLogger("networking.daily")
 
 
+def _headline_changed(old: str | None, new: str | None) -> bool:
+    """True when a social headline/title meaningfully changed (ignoring case
+    and whitespace). Used to flag profile changes as life events."""
+    if not old or not new or len(new.strip()) < 3:
+        return False
+    norm = lambda s: " ".join(s.casefold().split())  # noqa: E731
+    return norm(old) != norm(new)
+
+
 def build_digest_html(data) -> str:
     s = data.stats
 
@@ -160,6 +169,18 @@ def sweep_social(db) -> int:
         url = c.instagram_url or c.linkedin_url or c.facebook_url or c.twitter_url
         try:
             data = social.fetch_snapshot(url)
+            # Capture the previous headline BEFORE overwriting, so we can
+            # detect profile changes (new job title, bio, handle) — Mesh's
+            # "career moves surface automatically".
+            from app.modules.integrations.social.models import SocialSnapshot
+
+            prev = db.scalar(
+                select(SocialSnapshot).where(
+                    SocialSnapshot.contact_id == c.id,
+                    SocialSnapshot.url == data.url,
+                )
+            )
+            old_title = (prev.title or "").strip() if prev and prev.title else None
             snapshot = crud.upsert_snapshot(
                 db,
                 c,
@@ -170,6 +191,19 @@ def sweep_social(db) -> int:
             )
             db.refresh(c)
             known_titles = {e.title.casefold() for e in c.life_events}
+            new_title = (data.title or "").strip()
+            if _headline_changed(old_title, new_title):
+                change = f"Оновлення профілю: {new_title}"[:200]
+                if change.casefold() not in known_titles:
+                    crud.add_life_event(
+                        db,
+                        c,
+                        event_type="profile_change",
+                        title=change,
+                        description=f"Було: {old_title}",
+                        source=data.platform,
+                    )
+                    known_titles.add(change.casefold())
             for ev in ai.detect_life_events(c, snapshot):
                 title = (ev.get("title") or "").strip()
                 if not title or title.casefold() in known_titles:
