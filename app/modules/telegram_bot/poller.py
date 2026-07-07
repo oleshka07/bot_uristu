@@ -53,6 +53,7 @@ def run() -> None:
             {"command": "embed", "description": "Індексувати мережу для пошуку"},
             {"command": "find", "description": "Пошук контакту за іменем"},
             {"command": "timeline", "description": "Історія стосунку"},
+            {"command": "similar", "description": "Схожі та повʼязані люди"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},
         ]

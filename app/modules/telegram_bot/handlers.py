@@ -949,7 +949,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/reminders — активні нагадування\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n"
-                "/timeline &lt;ім'я&gt; — вся історія стосунку\n\n"
+                "/timeline &lt;ім'я&gt; — вся історія стосунку\n"
+                "/similar &lt;ім'я&gt; — схожі та повʼязані люди\n\n"
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
                 "• «запиши до Марії, що вона переїхала в Берлін»\n"
@@ -1136,6 +1137,58 @@ def _handle_command(client, admin: int, text: str) -> None:
                 )
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("similar", "related"):
+            if not arg.strip():
+                client.send_message(admin, "Використання: /similar &lt;ім'я&gt;")
+                return
+            contact = service.find_contact_by_name(db, arg.strip())
+            if contact is None:
+                client.send_message(admin, f"Не знайшов контакт «{_esc(arg)}».")
+                return
+            from app.modules.search import service as search_service
+
+            lines = [f"👥 <b>Схожі на {_esc(contact.full_name)}</b>"]
+            hits = search_service.similar_contacts(db, contact.id, k=5)
+            shown: set[int] = set()
+            for cid, score in hits:
+                c = crud.get_contact(db, cid)
+                if c is None:
+                    continue
+                shown.add(c.id)
+                role = " · ".join(filter(None, [c.position, c.company]))
+                lines.append(
+                    f"• {_contact_link(c)}" + (f" — {_esc(role)}" if role else "")
+                )
+            # Explicit links: same company or a shared goal (no AI needed).
+            related = []
+            if contact.company:
+                for c in crud.list_contacts(db, sort="name"):
+                    if (
+                        c.id != contact.id
+                        and c.id not in shown
+                        and (c.company or "").strip().casefold()
+                        == contact.company.strip().casefold()
+                    ):
+                        related.append((c, f"колега — {contact.company}"))
+            for g in getattr(contact, "goals", []):
+                for c in g.contacts:
+                    if c.id != contact.id and c.id not in shown:
+                        related.append((c, f"ціль — {g.title}"))
+            if related:
+                lines.append("")
+                lines.append("<b>Прямі звʼязки</b>")
+                seen: set[int] = set()
+                for c, why in related[:8]:
+                    if c.id in seen:
+                        continue
+                    seen.add(c.id)
+                    lines.append(f"• {_contact_link(c)} — <i>{_esc(why)}</i>")
+            if len(lines) == 1:
+                lines.append(
+                    "Поки нікого схожого. Проіндексуй мережу — /embed — "
+                    "для семантичних збігів."
+                )
             client.send_message(admin, "\n".join(lines))
         elif cmd in ("reflect", "reflection"):
             from app.modules.automation import reviews

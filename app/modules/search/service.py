@@ -113,3 +113,32 @@ def semantic_search(db: Session, query: str, k: int = 12) -> list[tuple[int, flo
         scored.append((e.contact_id, _cosine(q, vec)))
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:k]
+
+
+def similar_contacts(
+    db: Session, contact_id: int, k: int = 5
+) -> list[tuple[int, float]]:
+    """Return [(contact_id, score)] most similar to the given contact by
+    embedding cosine (Mesh 'Similar Profiles'). Empty when the contact isn't
+    embedded yet or embeddings are unavailable."""
+    if not llm.embeddings_enabled():
+        return []
+    model = llm.embeddings_model()
+    base = db.get(ContactEmbedding, contact_id)
+    if base is None or base.model != model:
+        return []
+    try:
+        bv = json.loads(base.vector)
+    except (ValueError, TypeError):
+        return []
+    scored: list[tuple[int, float]] = []
+    for e in db.scalars(select(ContactEmbedding).where(ContactEmbedding.model == model)):
+        if e.contact_id == contact_id:
+            continue
+        try:
+            vec = json.loads(e.vector)
+        except (ValueError, TypeError):
+            continue
+        scored.append((e.contact_id, _cosine(bv, vec)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:k]
