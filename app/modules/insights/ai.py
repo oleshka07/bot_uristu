@@ -779,3 +779,48 @@ def _fallback_event_message(contact: models.Contact, event: models.LifeEvent) ->
         f"Hi {contact.first_name}, I just heard about {event.title.lower()} — "
         "congratulations, that's wonderful news! Really happy for you."
     )
+
+
+_REFLECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reflections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "contact_id": {"type": "integer"},
+                    "reflection": {"type": "string"},
+                    "action": {"type": "string"},
+                },
+                "required": ["contact_id", "reflection", "action"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["reflections"],
+    "additionalProperties": False,
+}
+
+
+def reflect_on_relationships(items: list[dict]) -> list[dict] | None:
+    """Given [{id, context}] for a few contacts, return a short reflection and
+    one concrete next action per person. None when AI is unavailable.
+
+    ``context`` is a compact digest (history, facts, cadence). Mirrors Mesh's
+    "Reflect on your relationship with X, Y, Z" prompt."""
+    if not llm.enabled() or not items:
+        return None
+    blocks = "\n\n".join(
+        f"[contact_id={it['id']}]\n{it['context']}" for it in items
+    )
+    system = (
+        "Ти — вдумливий асистент з нетворкінгу. Для КОЖНОЇ людини нижче дай "
+        "коротку рефлексію про стосунок (1–2 речення: де ви зараз, що варто "
+        "памʼятати) і ОДНУ конкретну наступну дію (коротко, дієслово). Пиши "
+        "українською, тепло й по-людськи, без води. Respond with JSON only."
+    )
+    data = llm.json(system, blocks, _REFLECT_SCHEMA, max_tokens=1200, thinking=True)
+    if isinstance(data, dict) and isinstance(data.get("reflections"), list):
+        return data["reflections"]
+    return None

@@ -123,3 +123,99 @@ def run_weekly_review() -> bool:
     with SessionLocal() as db:
         text = weekly_review_text(db)
     return telegram.send_message(text, reply_markup=_QUEUE_BUTTON)
+
+
+# ── Relationship reflection (Mesh: "Reflect on your relationship with…") ──────
+
+
+def _reflection_context(db, contact) -> str:
+    """Compact digest for one contact, for the reflection prompt."""
+    from app import warmth
+    from app.modules.automation import reminders as _reminders
+
+    parts = [f"Ім'я: {contact.full_name}"]
+    role = " · ".join(filter(None, [contact.position, contact.company]))
+    if role:
+        parts.append(f"Роль: {role}")
+    parts.append(
+        f"Теплота: {contact.warmth_status}; "
+        f"{round(warmth.days_since_last_contact(contact))} дн. без контакту; "
+        f"ціль: {contact.contact_frequency.value}"
+    )
+    facts = [f.value for f in getattr(contact, "facts", []) if f.is_current][:5]
+    if facts:
+        parts.append("Факти: " + "; ".join(facts))
+    itx = sorted(contact.interactions, key=lambda i: i.occurred_at)
+    if itx and itx[-1].summary:
+        parts.append(f"Остання взаємодія: {itx[-1].summary[:150]}")
+    open_r = [
+        r for r in _reminders.open_reminders(db) if r.contact_id == contact.id
+    ]
+    if open_r:
+        parts.append("Відкриті нагадування: " + "; ".join(r.text for r in open_r[:3]))
+    return "\n".join(parts)
+
+
+def pick_reflection_contacts(db, n: int) -> list:
+    """The relationships most worth a deliberate think: important people who
+    are drifting (overdue / cooling), best-known first."""
+    from app import warmth
+    from app.modules.contacts.models import Contact
+    from app.modules.telegram_bot.service import effective_importance
+    from sqlalchemy import select
+
+    contacts = [
+        c
+        for c in db.scalars(select(Contact)).unique()
+        if not c.do_not_contact and c.interactions
+    ]
+    drifting = [
+        c
+        for c in contacts
+        if warmth.is_due(c) or c.warmth_status in ("cooling", "cold")
+    ]
+    pool = drifting or contacts
+    pool.sort(
+        key=lambda c: (effective_importance(c), warmth.overdue_ratio(c)),
+        reverse=True,
+    )
+    return pool[:n]
+
+
+def reflection_text(db, contacts) -> str | None:
+    """AI reflection + next action for each contact. None if AI unavailable
+    or nothing to reflect on."""
+    from app.modules.insights import ai
+
+    if not contacts:
+        return None
+    items = [{"id": c.id, "context": _reflection_context(db, c)} for c in contacts]
+    reflections = ai.reflect_on_relationships(items)
+    if not reflections:
+        return None
+    by_id = {c.id: c for c in contacts}
+    lines = ["🪞 <b>Подумай про стосунки</b>"]
+    for r in reflections:
+        c = by_id.get(r.get("contact_id"))
+        if c is None:
+            continue
+        lines.append("")
+        lines.append(f"👤 <b>{_esc(c.full_name)}</b>")
+        if r.get("reflection"):
+            lines.append(_esc(r["reflection"]))
+        if r.get("action"):
+            lines.append(f"➡️ <i>{_esc(r['action'])}</i>")
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+def run_weekly_reflection() -> bool:
+    if not (settings.reflection_enabled and _configured()):
+        return False
+    from app.modules.automation import telegram
+
+    with SessionLocal() as db:
+        contacts = pick_reflection_contacts(db, settings.reflection_count)
+        text = reflection_text(db, contacts)
+    if not text:
+        return False
+    return telegram.send_message(text, reply_markup=_QUEUE_BUTTON)

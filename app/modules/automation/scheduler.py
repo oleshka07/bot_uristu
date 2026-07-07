@@ -71,6 +71,16 @@ def start() -> None:
             replace_existing=True,
             misfire_grace_time=3600,
         )
+    if settings.reflection_enabled:
+        from .reviews import run_weekly_reflection
+
+        _scheduler.add_job(
+            run_weekly_reflection,
+            CronTrigger(day_of_week="thu", hour=settings.reflection_hour, minute=0),
+            id="weekly_reflection",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     _scheduler.start()
     logger.info(
         "Scheduler started; daily job at %02d:00 server time.",

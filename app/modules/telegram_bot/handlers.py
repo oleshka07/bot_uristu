@@ -945,6 +945,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/birthdays — найближчі дні народження\n"
                 "/events — що нового в людей\n"
                 "/reconnect — з ким варто відновити звʼязок\n"
+                "/reflect — подумати про стосунки (AI)\n"
                 "/reminders — активні нагадування\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n"
@@ -1136,6 +1137,20 @@ def _handle_command(client, admin: int, text: str) -> None:
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("reflect", "reflection"):
+            from app.modules.automation import reviews
+
+            contacts = reviews.pick_reflection_contacts(
+                db, settings.reflection_count
+            )
+            if not contacts:
+                client.send_message(admin, "Поки нема над чим рефлексувати ✦")
+                return
+            text = reviews.reflection_text(db, contacts)
+            client.send_message(
+                admin,
+                text or "AI недоступний — рефлексія потребує ключа (OpenAI/Anthropic).",
+            )
         elif cmd in ("timeline", "history"):
             if not arg.strip():
                 client.send_message(admin, "Використання: /timeline &lt;ім'я&gt;")

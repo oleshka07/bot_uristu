@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     checkin_hour: int = 13  # local server hour for the midday nudge
     weekly_review_enabled: bool = True
     weekly_review_hour: int = 9  # Monday morning network review
+    reflection_enabled: bool = True
+    reflection_hour: int = 10  # Thursday relationship reflection
+    reflection_count: int = 3  # how many relationships to reflect on
 
     # Daily social sweep: re-scrape socials of the N most-due contacts to
     # detect fresh life events (needs a scraper provider). 0 = off.
