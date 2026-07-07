@@ -415,6 +415,70 @@ def parse_voice_intake(text: str) -> dict | None:
     return None
 
 
+_ASSISTANT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["remind", "note", "cadence", "importance", "none"],
+        },
+        "person": {"type": "string"},
+        "text": {"type": "string"},
+        "due_date": {"type": "string"},  # ISO YYYY-MM-DD, or "" if none
+        "frequency": {
+            "type": "string",
+            "enum": [
+                "weekly", "biweekly", "monthly",
+                "quarterly", "biannual", "yearly", "",
+            ],
+        },
+        "importance": {"type": "integer"},  # 1..3, or 0 if not specified
+    },
+    "required": ["action", "person", "text", "due_date", "frequency", "importance"],
+    "additionalProperties": False,
+}
+
+
+def parse_assistant_intent(text: str, today: str) -> dict | None:
+    """Classify a free-text message to the bot as an assistant *command*.
+
+    Returns a dict with ``action`` in {remind, note, cadence, importance,
+    none}. ``action == "none"`` means it's NOT a command (a question or a
+    network search) — the caller should fall back to search. ``None`` when AI
+    is unavailable (caller also falls back to search).
+
+    ``today`` is the current date (e.g. "2026-07-07, понеділок") so the model
+    can resolve relative times like "через 3 тижні" into ``due_date``.
+    """
+    if not llm.enabled() or not text.strip():
+        return None
+    system = (
+        "Ти — асистент персонального нетворкінг-CRM. Користувач пише боту "
+        "вільним текстом. Визнач, чи це КОМАНДА-дія над контактом, чи ні.\n"
+        f"Сьогодні {today}.\n"
+        "Дії (action):\n"
+        "• remind — поставити нагадування («нагадай написати Олегу через 3 "
+        "тижні», «пінг Марії в пʼятницю»). Заповни person, text (що зробити), "
+        "due_date (ISO дата, обчисли від сьогодні).\n"
+        "• note — записати нотатку/факт про людину («запиши до Олега, що він "
+        "переїхав у Берлін»). Заповни person і text.\n"
+        "• cadence — змінити частоту контакту («спілкуватися з Олегом раз на "
+        "місяць»). Заповни person і frequency.\n"
+        "• importance — змінити важливість 1..3 («Олег дуже важливий»=3). "
+        "Заповни person і importance.\n"
+        "• none — це НЕ команда: питання чи пошук по мережі («хто з моїх "
+        "у крипті?», «знайди Марію»). Став action=none.\n"
+        "Якщо не впевнений — став none. Порожні поля лишай порожніми рядками "
+        "(або 0 для importance). Respond with JSON only."
+    )
+    data = llm.json(system, text.strip(), _ASSISTANT_SCHEMA, max_tokens=400)
+    if isinstance(data, dict) and data.get("action") in {
+        "remind", "note", "cadence", "importance", "none",
+    }:
+        return data
+    return None
+
+
 _SEARCH_SCHEMA = {
     "type": "object",
     "properties": {

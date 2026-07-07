@@ -336,6 +336,10 @@ def approve_and_send(db: Session, client, draft: TelegramDraft) -> bool:
             db.refresh(contact)
             warmth.refresh(contact)
             db.commit()
+        # Reaching out fulfils any open reminder for this person.
+        from app.modules.automation import reminders as _reminders
+
+        _reminders.complete_for_contact(db, contact.id)
 
     mark(db, draft, DraftStatus.sent)
     return True
@@ -466,11 +470,21 @@ def outreach_reason(contact: Contact) -> str:
 def next_outreach_contact(db: Session) -> tuple[Contact, str] | None:
     """The next queue card: (contact, reason).
 
-    Priority: birthdays today → unanswered follow-ups → most overdue.
-    A contact is offered at most once per day (outreach drafts are the
-    ledger), whatever the user decided about them."""
+    Priority: due user-set reminders → birthdays today → unanswered
+    follow-ups → most overdue. A contact is offered at most once per day
+    (outreach drafts are the ledger), whatever the user decided about them."""
+    from app.modules.automation import reminders as _reminders
+
     drafted_today = _drafted_today_ids(db)
     pool = [c for c in _reachable(db) if c.id not in drafted_today]
+    by_id = {c.id: c for c in pool}
+
+    # 1) Explicit reminders the user set ("remind me to write Oleg") — the
+    #    strongest signal, since the user asked for it by name.
+    for r in _reminders.due_reminders(db):
+        c = by_id.get(r.contact_id)
+        if c is not None:
+            return c, f"нагадування: {r.text}"
 
     today = datetime.now(timezone.utc).date()
     for c in pool:
@@ -533,6 +547,26 @@ def create_outreach_draft(
 # ── Voice intake ─────────────────────────────────────────────────────────────
 
 
+def find_contact_by_name(db: Session, name: str) -> Contact | None:
+    """Fuzzy-match a contact by a spoken/typed name (substring both ways).
+
+    Prefers the tightest name match, then the best-known contact. Shared by
+    voice intake and the natural-language assistant so they resolve people
+    the same way. Returns None on no match or empty name."""
+    needle = (name or "").strip().casefold()
+    if not needle:
+        return None
+    matches = [
+        c
+        for c in db.scalars(select(Contact)).unique()
+        if needle in c.full_name.casefold() or c.full_name.casefold() in needle
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda c: (len(c.full_name), -effective_importance(c)))
+    return matches[0]
+
+
 def apply_intake(db: Session, parsed: dict) -> tuple[Contact, bool, int]:
     """Apply a parsed voice note: find-or-create the contact by name, add
     facts (deduped by the facts layer), append the note. Returns
@@ -546,19 +580,7 @@ def apply_intake(db: Session, parsed: dict) -> tuple[Contact, bool, int]:
         raw_name.split(" ", 1)[1] if " " in raw_name else None
     )
 
-    needle = raw_name.casefold()
-    contact = next(
-        (
-            c
-            for c in db.scalars(select(Contact)).unique()
-            if needle
-            and (
-                needle in c.full_name.casefold()
-                or c.full_name.casefold() in needle
-            )
-        ),
-        None,
-    )
+    contact = find_contact_by_name(db, raw_name)
     created = False
     if contact is None:
         contact = Contact(first_name=first or "Unknown", last_name=last)

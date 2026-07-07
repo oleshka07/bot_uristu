@@ -314,6 +314,10 @@ def handle_business_message(client, msg: dict) -> None:
                 db.refresh(contact)
                 warmth.refresh(contact)
                 db.commit()
+            # Messaging someone directly closes any reminder about them.
+            from app.modules.automation import reminders as _reminders
+
+            _reminders.complete_for_contact(db, contact.id)
         return
 
     with SessionLocal() as db:
@@ -552,8 +556,11 @@ def handle_admin_message(client, msg: dict) -> None:
         _handle_voice_intake(client, admin, transcript)
         return
 
-    # Plain text = natural-language search over the network.
+    # Plain text: first try to interpret it as an assistant command
+    # (reminder / note / cadence / importance); otherwise search the network.
     if text.strip():
+        if _handle_assistant_intent(client, admin, text.strip()):
+            return
         _handle_network_search(client, admin, text.strip())
 
 
@@ -633,6 +640,120 @@ def _handle_voice_intake(client, admin: int, transcript: str) -> None:
         if note:
             lines.append(f"📝 {_esc(note[:200])}")
         client.send_message(admin, "\n".join(lines))
+
+
+_WEEKDAYS_UK = [
+    "понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя",
+]
+
+
+def _due_from_iso(s: str):
+    """ISO date string → a due datetime at 09:00 UTC, or None if unparseable."""
+    from datetime import date as _date, datetime, time, timezone
+
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        d = _date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+    return datetime.combine(d, time(9, 0, tzinfo=timezone.utc))
+
+
+def _handle_assistant_intent(client, admin: int, text: str) -> bool:
+    """Nexus-style: interpret a free-text message as a command over a contact
+    (reminder / note / cadence / importance) and act on it. Returns True when
+    handled; False means 'not a command' → caller falls back to search."""
+    from datetime import datetime, timezone
+
+    from app.modules.insights import ai as _ai
+
+    now = datetime.now(timezone.utc)
+    today = f"{now.date().isoformat()}, {_WEEKDAYS_UK[now.weekday()]}"
+    intent = _ai.parse_assistant_intent(text, today)
+    if not intent:
+        return False
+    action = intent.get("action")
+    if action not in ("remind", "note", "cadence", "importance"):
+        return False
+
+    person = (intent.get("person") or "").strip()
+    with SessionLocal() as db:
+        contact = service.find_contact_by_name(db, person) if person else None
+        if contact is None:
+            # Couldn't resolve the person → let network search try instead.
+            return False
+
+        if action == "remind":
+            due = _due_from_iso(intent.get("due_date", ""))
+            if due is None:
+                return False
+            from app.modules.automation import reminders as _reminders
+
+            what = (intent.get("text") or "").strip() or (
+                f"написати {contact.full_name}"
+            )
+            _reminders.create_reminder(db, contact, what, due)
+            client.send_message(
+                admin,
+                f"⏰ Нагадаю: <b>{_esc(what)}</b>\n"
+                f"👤 {_contact_link(contact)} · {due.date().isoformat()}",
+            )
+            return True
+
+        if action == "note":
+            note = (intent.get("text") or "").strip()
+            if not note:
+                return False
+            from datetime import datetime as _dt, timezone as _tz
+
+            stamp = _dt.now(_tz.utc).strftime("%d.%m.%Y")
+            contact.notes = (
+                f"{contact.notes}\n[{stamp}] {note}"
+                if contact.notes
+                else f"[{stamp}] {note}"
+            )
+            db.commit()
+            client.send_message(
+                admin,
+                f"📝 Записав до <b>{_contact_link(contact)}</b>:\n{_esc(note)}",
+            )
+            return True
+
+        if action == "cadence":
+            from app.modules.contacts.models import Frequency
+
+            freq = (intent.get("frequency") or "").strip()
+            try:
+                contact.contact_frequency = Frequency(freq)
+            except ValueError:
+                return False
+            from app import warmth
+
+            warmth.refresh(contact)
+            db.commit()
+            client.send_message(
+                admin,
+                f"🔁 Каденція для <b>{_contact_link(contact)}</b>: "
+                f"{_esc(freq)}.",
+            )
+            return True
+
+        if action == "importance":
+            imp = int(intent.get("importance") or 0)
+            if imp not in (1, 2, 3):
+                return False
+            contact.importance = imp
+            db.commit()
+            stars = "⭐" * imp
+            client.send_message(
+                admin,
+                f"{stars} Важливість <b>{_contact_link(contact)}</b>: {imp}/3.",
+            )
+            return True
+
+    return False
 
 
 def _handle_network_search(client, admin: int, query: str) -> None:
@@ -744,9 +865,14 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/birthdays — найближчі дні народження\n"
                 "/events — що нового в людей\n"
                 "/reconnect — з ким варто відновити звʼязок\n"
+                "/reminders — активні нагадування\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n\n"
-                "💬 Просто напиши питання — пошук по мережі "
+                "🤖 Пиши боту як асистенту:\n"
+                "• «нагадай написати Олегу через 3 тижні»\n"
+                "• «запиши до Марії, що вона переїхала в Берлін»\n"
+                "• «спілкуватися з Іваном раз на місяць»\n\n"
+                "💬 Або постав питання — пошук по мережі "
                 "(«хто з моїх шарить у крипті?»)\n"
                 "🎤 Голосове — запишу в базу («познайомився з Андрієм, "
                 "робить фінтех...»)\n\n"
@@ -902,6 +1028,33 @@ def _handle_command(client, admin: int, text: str) -> None:
                     ]
                 },
             )
+        elif cmd in ("reminders", "remind"):
+            from app.modules.automation import reminders as _reminders
+
+            open_r = _reminders.open_reminders(db)
+            if not open_r:
+                client.send_message(
+                    admin,
+                    "Активних нагадувань немає.\n\n"
+                    "Постав природною мовою: «нагадай написати Олегу через "
+                    "3 тижні».",
+                )
+                return
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+            lines = ["⏰ <b>Нагадування</b>"]
+            for r in open_r[:20]:
+                due = r.due_at if r.due_at.tzinfo else r.due_at.replace(tzinfo=timezone.utc)
+                days = (due.date() - now.date()).days
+                when = (
+                    "сьогодні"
+                    if days == 0
+                    else (f"прострочено на {-days}д" if days < 0 else f"через {days}д")
+                )
+                who = r.contact.full_name if r.contact else "—"
+                lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
+            client.send_message(admin, "\n".join(lines))
         elif cmd == "find":
             if not arg.strip():
                 client.send_message(admin, "Використання: /find &lt;ім'я чи компанія&gt;")

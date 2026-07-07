@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "interactions",
     "key_dates",
     "life_events",
+    "reminders",
     "social_snapshots",
     "style_profile",
     "tags",

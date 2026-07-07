@@ -5,6 +5,7 @@ keeps working. Importing this module registers every table on Base.metadata.
 """
 
 from app.core.database import Base, utcnow  # noqa: F401
+from app.modules.automation.models import Reminder  # noqa: F401
 from app.modules.contacts.models import (  # noqa: F401
     Contact,
     Frequency,

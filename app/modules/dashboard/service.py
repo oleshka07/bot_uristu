@@ -112,6 +112,24 @@ def build_dashboard(db: Session) -> schemas.Dashboard:
                         days_away=days,
                     )
                 )
+
+    # User-set reminders (due or coming up within the window).
+    from app.modules.automation import reminders as _reminders
+
+    for r in _reminders.open_reminders(db):
+        if r.contact is None:
+            continue
+        due_date = r.due_at.date()
+        days = (due_date - today).days
+        if days <= window:  # includes overdue (negative) and near-future
+            upcoming.append(
+                schemas.UpcomingDate(
+                    contact=schemas.ContactSummary.from_model(r.contact),
+                    label=f"⏰ {r.text}",
+                    date=due_date,
+                    days_away=max(days, 0),
+                )
+            )
     upcoming.sort(key=lambda u: u.days_away)
 
     return schemas.Dashboard(

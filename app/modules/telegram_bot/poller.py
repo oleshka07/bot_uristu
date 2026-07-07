@@ -46,6 +46,7 @@ def run() -> None:
             {"command": "birthdays", "description": "Найближчі дні народження"},
             {"command": "events", "description": "Що нового в людей"},
             {"command": "reconnect", "description": "Відновити звʼязок"},
+            {"command": "reminders", "description": "Активні нагадування"},
             {"command": "due", "description": "Прострочені контакти"},
             {"command": "goals", "description": "Активні цілі"},
             {"command": "embed", "description": "Індексувати мережу для пошуку"},
