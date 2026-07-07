@@ -127,29 +127,60 @@ the run; on success the site updates within ~1–2 minutes.
 
 ---
 
-## C. Connecting to the Chater database (optional but recommended)
+## C. Connecting to the Chater database (one-time import only)
 
 Chater stores its data in PostgreSQL on the same server. To import its contacts
-and Telegram history, set `CHATER_DATABASE_URL` to that database.
+and Telegram history once, set `CHATER_DATABASE_URL` to that database.
+
+> **After the migration is done you no longer need this.** Once the import has
+> run, the app operates entirely on its **own** database — nothing in daily
+> operation reads from Chater's Postgres. Remove `CHATER_DATABASE_URL` and lock
+> the Chater DB back down (see the security box below).
+
+> ### 🔒 SECURITY — never expose PostgreSQL to the internet
+>
+> PostgreSQL must **only** listen on the loopback/Docker-bridge interface. Do
+> **not** set `listen_addresses = '*'` and do **not** add `0.0.0.0/0` lines to
+> `pg_hba.conf`. Doing so puts port 5432 on the public internet — automated
+> scanners (and CERT/BSI abuse notices) will find it within hours, and anyone
+> can attempt credential brute-force against your data.
+>
+> Safe values for Chater's `postgresql.conf` / `pg_hba.conf`:
+> ```
+> # postgresql.conf
+> listen_addresses = 'localhost,172.17.0.1'   # loopback + Docker bridge ONLY
+> # pg_hba.conf — allow only the Docker bridge subnet, never 0.0.0.0/0
+> host  chater  chater_user  172.17.0.0/16  scram-sha-256
+> ```
+> Then also firewall the port so it can never leak to the outside even by
+> mistake:
+> ```bash
+> sudo ufw deny 5432/tcp
+> ```
+> Note: if a Docker container *publishes* 5432 (`ports: ["5432:5432"]`), Docker
+> writes its own iptables rules that **bypass ufw** — so never publish the DB
+> port. This project's `db` service deliberately publishes **no** ports; it is
+> reached only over the internal Docker network as `@db:5432`.
 
 Find the connection details (check Chater's own `.env`, usually under
-`/root/projects/chater/.env`). If Chater's Postgres listens on the host's
-`localhost:5432`, the Networking AI **container** must reach the host. Two ways:
+`/root/projects/chater/.env`). The Networking AI **container** reaches the host
+Postgres over the Docker bridge gateway:
 
-1. **Easiest** — use the server's LAN/host IP instead of `localhost`:
-   ```
-   CHATER_DATABASE_URL=postgresql+psycopg://chater_user:pass@172.17.0.1:5432/chater
-   ```
-   `172.17.0.1` is the default Docker bridge gateway (the host as seen from the
-   container). Ensure Postgres `listen_addresses` and `pg_hba.conf` allow it, or
-2. add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `web` service
-   and use `host.docker.internal`.
+```
+CHATER_DATABASE_URL=postgresql+psycopg://chater_user:pass@172.17.0.1:5432/chater
+```
+
+`172.17.0.1` is the default Docker bridge gateway (the host as seen from the
+container). With `listen_addresses = 'localhost,172.17.0.1'` and the
+`172.17.0.0/16` `pg_hba.conf` line above, the container can connect while the
+port stays completely off the public internet.
 
 Then: app → **Integrations → Chater → Inspect (dry run)** to confirm the schema
 mapping, then **Import now**. Re-running is safe (idempotent).
 
 > Read-only is enough — create a dedicated read-only Postgres user for Chater's
-> DB if you want to be strict.
+> DB. When the migration is complete, remove `CHATER_DATABASE_URL` from `.env`
+> and set `listen_addresses = 'localhost'` to close the bridge entirely.
 
 ---
 
