@@ -950,7 +950,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n"
                 "/timeline &lt;ім'я&gt; — вся історія стосунку\n"
-                "/similar &lt;ім'я&gt; — схожі та повʼязані люди\n\n"
+                "/similar &lt;ім'я&gt; — схожі та повʼязані люди\n"
+                "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
                 "• «запиши до Марії, що вона переїхала в Берлін»\n"
@@ -1137,6 +1138,62 @@ def _handle_command(client, admin: int, text: str) -> None:
                 )
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("activity", "status"):
+            from datetime import datetime, timedelta, timezone
+            from sqlalchemy import select
+
+            now = datetime.now(timezone.utc)
+            week = now - timedelta(days=7)
+
+            def _aware(dt):
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+            all_contacts = list(db.scalars(select(models.Contact)).unique())
+            new_c = [c for c in all_contacts if _aware(c.created_at) >= week]
+            events = list(
+                db.scalars(
+                    select(models.LifeEvent).order_by(
+                        models.LifeEvent.created_at.desc()
+                    )
+                )
+            )
+            recent_ev = [e for e in events if _aware(e.created_at) >= week]
+
+            lines = ["🛠 <b>Активність бота</b>"]
+            lines.append("")
+            lines.append(f"👥 Нових контактів за тиждень: <b>{len(new_c)}</b>")
+            for c in new_c[:5]:
+                src = ", ".join(t.name for t in c.tags) or "—"
+                lines.append(f"  • {_esc(c.full_name)} <i>({_esc(src)})</i>")
+            lines.append(f"🎉 Нових подій за тиждень: <b>{len(recent_ev)}</b>")
+            for e in recent_ev[:3]:
+                who = e.contact.full_name if e.contact else "?"
+                lines.append(f"  • {_esc(who)} — {_esc(e.title)}")
+
+            from app.modules.automation import reminders as _reminders
+            from app.modules.search import service as search_service
+            from app.modules.insights import llm as _llm
+            from app.integrations import google as _google
+
+            open_r = len(_reminders.open_reminders(db))
+            g = _google.status(db)
+            prov = _llm.active_provider() or "вимкнено"
+            pending = search_service.pending_count(db)
+
+            lines.append("")
+            lines.append("<b>Стан</b>")
+            lines.append(f"📇 Всього контактів: {len(all_contacts)}")
+            lines.append(f"⏰ Відкритих нагадувань: {open_r}")
+            lines.append(f"🤖 AI-провайдер: {_esc(prov)}")
+            lines.append(f"🧠 Не проіндексовано: {pending}")
+            lines.append(
+                "📧 Google: " + ("підключено ✅" if g.get("connected") else "ні")
+            )
+            lines.append(
+                "✈️ Telegram: "
+                + ("налаштовано ✅" if settings.telegram_configured else "ні")
+            )
             client.send_message(admin, "\n".join(lines))
         elif cmd in ("similar", "related"):
             if not arg.strip():

@@ -54,6 +54,7 @@ def run() -> None:
             {"command": "find", "description": "Пошук контакту за іменем"},
             {"command": "timeline", "description": "Історія стосунку"},
             {"command": "similar", "description": "Схожі та повʼязані люди"},
+            {"command": "activity", "description": "Що робив бот + стан"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},
         ]
