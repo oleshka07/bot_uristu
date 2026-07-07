@@ -724,7 +724,7 @@ def _render_search_matches(client, admin, query, matches, by_id):
 
 
 def _handle_command(client, admin: int, text: str) -> None:
-    from app import crud, dashboard, warmth
+    from app import crud, dashboard, models, warmth
     from app.modules.automation import telegram as tg
 
     cmd, _, arg = text.strip().partition(" ")
@@ -740,6 +740,10 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
+                "/upcoming — що попереду (дні народження, події)\n"
+                "/birthdays — найближчі дні народження\n"
+                "/events — що нового в людей\n"
+                "/reconnect — з ким варто відновити звʼязок\n"
                 "/due — всі прострочені\n"
                 "/find &lt;ім'я&gt; — пошук за іменем\n\n"
                 "💬 Просто напиши питання — пошук по мережі "
@@ -827,6 +831,77 @@ def _handle_command(client, admin: int, text: str) -> None:
                 d = round(warmth.days_since_last_contact(c))
                 lines.append(f"• {_esc(c.full_name)} — {d}д ({c.warmth_status})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("upcoming", "naperec", "ahead"):
+            data = dashboard.build_dashboard(db)
+            if not data.upcoming:
+                client.send_message(admin, "Найближчим часом — жодних дат попереду ✦")
+                return
+            lines = ["🔮 <b>Наперед</b>"]
+            for u in data.upcoming:
+                when = "сьогодні" if u.days_away == 0 else f"через {u.days_away}д"
+                label = (
+                    "🎂 день народження" if u.label == "Birthday" else _esc(u.label)
+                )
+                lines.append(f"• {_esc(u.contact.full_name)} — {label} ({when})")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("birthdays", "bdays", "dr"):
+            data = dashboard.build_dashboard(db)
+            bdays = [u for u in data.upcoming if u.label == "Birthday"]
+            if not bdays:
+                client.send_message(admin, "Найближчим часом днів народження немає 🎂")
+                return
+            lines = ["🎂 <b>Дні народження</b>"]
+            for u in bdays:
+                when = "сьогодні! 🎉" if u.days_away == 0 else f"через {u.days_away}д"
+                lines.append(f"• {_esc(u.contact.full_name)} — {when}")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("events", "updates"):
+            from sqlalchemy import select
+
+            events = list(
+                db.scalars(
+                    select(models.LifeEvent)
+                    .where(models.LifeEvent.status == models.LifeEventStatus.new)
+                    .order_by(models.LifeEvent.created_at.desc())
+                )
+            )
+            if not events:
+                client.send_message(admin, "Нових оновлень по людях поки немає ✦")
+                return
+            lines = ["📰 <b>Що нового в людей</b>"]
+            for e in events[:20]:
+                who = e.contact.full_name if e.contact else "?"
+                lines.append(f"• <b>{_esc(who)}</b> — {_esc(e.title)}")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("reconnect", "reconnects"):
+            from app.modules.telegram_bot.service import effective_importance
+
+            due = [
+                c
+                for c in crud.list_contacts(db, sort="due")
+                if warmth.is_due(c) and not c.do_not_contact
+            ]
+            if not due:
+                client.send_message(admin, "Нікого повторно піймати не треба зараз ✦")
+                return
+            due.sort(
+                key=lambda c: (effective_importance(c), warmth.overdue_ratio(c)),
+                reverse=True,
+            )
+            lines = ["🔁 <b>Варто відновити звʼязок</b>"]
+            for c in due[:15]:
+                d = round(warmth.days_since_last_contact(c))
+                star = "⭐ " if effective_importance(c) >= 3 else ""
+                lines.append(f"• {star}{_esc(c.full_name)} — {d}д ({c.warmth_status})")
+            client.send_message(
+                admin,
+                "\n".join(lines),
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "🚀 Почати обхід", "callback_data": "q:start"}]
+                    ]
+                },
+            )
         elif cmd == "find":
             if not arg.strip():
                 client.send_message(admin, "Використання: /find &lt;ім'я чи компанія&gt;")

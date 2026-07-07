@@ -42,6 +42,10 @@ def run() -> None:
         [
             {"command": "queue", "description": "Кому написати сьогодні"},
             {"command": "today", "description": "Дайджест дня"},
+            {"command": "upcoming", "description": "Що попереду"},
+            {"command": "birthdays", "description": "Найближчі дні народження"},
+            {"command": "events", "description": "Що нового в людей"},
+            {"command": "reconnect", "description": "Відновити звʼязок"},
             {"command": "due", "description": "Прострочені контакти"},
             {"command": "goals", "description": "Активні цілі"},
             {"command": "embed", "description": "Індексувати мережу для пошуку"},
