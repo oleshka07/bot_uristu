@@ -844,6 +844,86 @@ def _render_search_matches(client, admin, query, matches, by_id):
     client.send_message(admin, "\n".join(lines))
 
 
+def _fmt_date(dt) -> str:
+    from datetime import timezone
+
+    if dt is None:
+        return "?"
+    if getattr(dt, "tzinfo", None) is None and hasattr(dt, "date"):
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%d.%m.%Y")
+
+
+def _timeline_text(db, contact) -> str:
+    """Everything we know about the relationship, in one glance: history
+    endpoints, open reminders, live facts, recent life events, notes."""
+    from app import warmth
+    from app.modules.automation import reminders as _reminders
+    from app.modules.telegram_bot.service import effective_importance
+
+    role = " · ".join(filter(None, [contact.position, contact.company]))
+    imp = effective_importance(contact)
+    header = f"🧭 <b>{_contact_link(contact)}</b>"
+    if role:
+        header += f"\n💼 {_esc(role)}"
+    header += (
+        f"\n📶 {contact.warmth_status} ({round(contact.warmth_score)})"
+        + (f" · {'⭐' * imp}" if imp else "")
+    )
+    lines = [header]
+
+    itx = sorted(contact.interactions, key=lambda i: i.occurred_at)
+    if itx:
+        lines.append("")
+        lines.append("<b>Історія</b>")
+        first = itx[0]
+        lines.append(
+            f"• Перша: {_fmt_date(first.occurred_at)}"
+            + (f" — {_esc((first.summary or '')[:80])}" if first.summary else "")
+        )
+        if len(itx) > 1:
+            last = itx[-1]
+            lines.append(
+                f"• Остання: {_fmt_date(last.occurred_at)}"
+                + (f" — {_esc((last.summary or '')[:80])}" if last.summary else "")
+            )
+        lines.append(f"• Всього дотиків: {len(itx)}")
+
+    open_r = [r for r in _reminders.open_reminders(db) if r.contact_id == contact.id]
+    if open_r:
+        lines.append("")
+        lines.append("<b>⏰ Нагадування</b>")
+        for r in open_r[:5]:
+            lines.append(f"• {_esc(r.text)} ({_fmt_date(r.due_at)})")
+
+    facts = [f for f in getattr(contact, "facts", []) if f.is_current]
+    if facts:
+        lines.append("")
+        lines.append("<b>Факти</b>")
+        for f in facts[:8]:
+            lines.append(f"• {_esc(f.value[:120])}")
+
+    events = sorted(
+        contact.life_events, key=lambda e: e.created_at, reverse=True
+    )
+    if events:
+        lines.append("")
+        lines.append("<b>Події</b>")
+        for e in events[:4]:
+            lines.append(f"• {_esc(e.title)} ({_fmt_date(e.created_at)})")
+
+    if contact.birth_date:
+        lines.append("")
+        lines.append(f"🎂 День народження: {contact.birth_date.strftime('%d.%m')}")
+
+    if contact.notes:
+        lines.append("")
+        lines.append("<b>Нотатки</b>")
+        lines.append(f"<i>{_esc(contact.notes[-400:])}</i>")
+
+    return "\n".join(lines)
+
+
 def _handle_command(client, admin: int, text: str) -> None:
     from app import crud, dashboard, models, warmth
     from app.modules.automation import telegram as tg
@@ -867,7 +947,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/reconnect — з ким варто відновити звʼязок\n"
                 "/reminders — активні нагадування\n"
                 "/due — всі прострочені\n"
-                "/find &lt;ім'я&gt; — пошук за іменем\n\n"
+                "/find &lt;ім'я&gt; — пошук за іменем\n"
+                "/timeline &lt;ім'я&gt; — вся історія стосунку\n\n"
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
                 "• «запиши до Марії, що вона переїхала в Берлін»\n"
@@ -1055,6 +1136,15 @@ def _handle_command(client, admin: int, text: str) -> None:
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("timeline", "history"):
+            if not arg.strip():
+                client.send_message(admin, "Використання: /timeline &lt;ім'я&gt;")
+                return
+            contact = service.find_contact_by_name(db, arg.strip())
+            if contact is None:
+                client.send_message(admin, f"Не знайшов контакт «{_esc(arg)}».")
+                return
+            client.send_message(admin, _timeline_text(db, contact))
         elif cmd == "find":
             if not arg.strip():
                 client.send_message(admin, "Використання: /find &lt;ім'я чи компанія&gt;")
