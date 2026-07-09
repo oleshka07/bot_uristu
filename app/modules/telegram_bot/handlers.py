@@ -661,42 +661,119 @@ def _due_from_iso(s: str):
     return datetime.combine(d, time(9, 0, tzinfo=timezone.utc))
 
 
-def _handle_calendar_event(client, admin: int, intent: dict) -> bool:
-    """Create a Google Calendar event from a natural-language request.
-    Returns True (handled) whenever this looks like a calendar command, even
-    if creation fails — so we tell the user rather than fall back to search."""
-    from datetime import date as _date, datetime, timedelta
+_UA_REL_DAYS = (("післязавтра", 2), ("позавтра", 2), ("завтра", 1), ("сьогодні", 0))
+_UA_WEEKDAYS = {
+    "понеділок": 0, "вівторок": 1, "середу": 2, "середа": 2, "четвер": 3,
+    "пʼятниц": 4, "пятниц": 4, "суботу": 5, "субот": 5, "неділ": 6,
+}
+
+
+def _looks_like_calendar(text: str) -> bool:
+    """Keyword net so a calendar request is caught even if the AI under-
+    classifies it or its JSON call failed."""
+    t = text.lower()
+    if "календар" in t:
+        return True
+    verbs = ("додай", "добав", "додати", "постав", "заплануй", "створи", "признач")
+    nouns = ("зустріч", "поді", "мітинг", "meeting", "дзвінок", "созвон")
+    return any(v in t for v in verbs) and any(n in t for n in nouns)
+
+
+def _cal_date_from_text(text: str, today):
+    from datetime import timedelta
+
+    t = text.lower()
+    for word, off in _UA_REL_DAYS:
+        if word in t:
+            return today + timedelta(days=off)
+    for name, idx in _UA_WEEKDAYS.items():
+        if name in t:
+            return today + timedelta(days=((idx - today.weekday()) % 7 or 7))
+    return None
+
+
+def _cal_hm(s):
+    """Parse a 'HH:MM' / 'HH' string to (hour, minute), or None."""
+    import re
+
+    if not s:
+        return None
+    m = re.match(r"\s*(\d{1,2})[:.\s](\d{2})", str(s))
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return int(m.group(1)), int(m.group(2))
+    m = re.match(r"\s*(\d{1,2})\s*$", str(s))
+    if m and int(m.group(1)) < 24:
+        return int(m.group(1)), 0
+    return None
+
+
+def _cal_time_from_text(text: str):
+    """Find a start time in free Ukrainian text: 'о 15:00', 'на 14.30', '15:00'."""
+    import re
+
+    t = text.lower()
+    m = re.search(r"(?:о|на|в|у)\s*(\d{1,2})[:.](\d{2})", t) or re.search(
+        r"(\d{1,2}):(\d{2})", t
+    )
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"(?:о|на)\s+(\d{1,2})(?:\s*(?:годин|год))?(?!\d)", t)
+    if m and int(m.group(1)) < 24:
+        return int(m.group(1)), 0
+    return None
+
+
+def _cal_email_from_text(text: str):
+    import re
+
+    m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
+    return m.group(0) if m else None
+
+
+def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
+    """Create a Google Calendar event from a natural-language request. Parses
+    date/time in Python (not trusting the model), asks for the time if it's
+    missing, and always returns True — a calendar request never falls through
+    to network search."""
+    from datetime import date as _date, datetime, timedelta, timezone
 
     from app.integrations import google
 
-    date_s = (intent.get("due_date") or "").strip()[:10]
-    start_t = (intent.get("start_time") or "").strip()
-    if not date_s or not start_t:
-        return False  # not enough to build a timed event → let search try
+    today = datetime.now(timezone.utc).date()
+    ds = (intent.get("due_date") or "").strip()[:10]
     try:
-        _date.fromisoformat(date_s)
-        sh, sm = (int(x) for x in start_t.split(":")[:2])
-        start_dt = datetime.strptime(f"{date_s} {sh:02d}:{sm:02d}", "%Y-%m-%d %H:%M")
-    except (ValueError, TypeError):
-        return False
-    start_local = start_dt.strftime("%Y-%m-%dT%H:%M:00")
+        d = _date.fromisoformat(ds)
+    except ValueError:
+        d = None
+    if d is None:
+        d = _cal_date_from_text(text, today) or today
 
-    end_t = (intent.get("end_time") or "").strip()
-    end_dt = None
-    if end_t:
-        try:
-            eh, em = (int(x) for x in end_t.split(":")[:2])
-            end_dt = start_dt.replace(hour=eh, minute=em)
-        except (ValueError, TypeError):
-            end_dt = None
+    hm = _cal_hm(intent.get("start_time")) or _cal_time_from_text(text)
+    title = (intent.get("title") or "").strip() or (
+        "Зустріч" if "зустріч" in text.lower() else "Подія"
+    )
+    email = (intent.get("attendee_email") or "").strip() or _cal_email_from_text(text)
+    meet = bool(intent.get("google_meet")) or any(
+        w in text.lower() for w in ("google meet", "meet", "онлайн", "гугл міт")
+    )
+    person = (intent.get("person") or "").strip()
+
+    if hm is None:
+        client.send_message(
+            admin,
+            f"📅 Готую подію «{_esc(title)}» на {d.isoformat()}. "
+            "О котрій? Напиши час, напр. «о 15:00».",
+        )
+        return True
+
+    sh, sm = hm
+    start_dt = datetime(d.year, d.month, d.day, sh, sm)
+    endhm = _cal_hm(intent.get("end_time"))
+    end_dt = datetime(d.year, d.month, d.day, endhm[0], endhm[1]) if endhm else None
     if end_dt is None or end_dt <= start_dt:
         end_dt = start_dt + timedelta(hours=1)
+    start_local = start_dt.strftime("%Y-%m-%dT%H:%M:00")
     end_local = end_dt.strftime("%Y-%m-%dT%H:%M:00")
-
-    title = (intent.get("title") or "").strip() or "Зустріч"
-    email = (intent.get("attendee_email") or "").strip() or None
-    meet = bool(intent.get("google_meet"))
-    person = (intent.get("person") or "").strip()
 
     with SessionLocal() as db:
         if not email and person:
@@ -715,7 +792,7 @@ def _handle_calendar_event(client, admin: int, intent: dict) -> bool:
             summary=title,
             start_local=start_local,
             end_local=end_local,
-            attendee_email=email,
+            attendee_email=email or None,
             add_meet=meet,
         )
     if not result:
@@ -727,11 +804,10 @@ def _handle_calendar_event(client, admin: int, intent: dict) -> bool:
         )
         return True
 
-    lines = [
-        f"✅ Подію створено: <b>{_esc(title)}</b>",
-        f"🗓 {date_s} о {sh:02d}:{sm:02d}"
-        + (f"–{end_dt.strftime('%H:%M')}" if end_t else ""),
-    ]
+    when = f"{d.isoformat()} о {sh:02d}:{sm:02d}"
+    if endhm:
+        when += f"–{end_dt.strftime('%H:%M')}"
+    lines = [f"✅ Подію створено: <b>{_esc(title)}</b>", f"🗓 {when}"]
     if email:
         lines.append(f"👤 Гість: {_esc(email)}")
     if result.get("meet_link"):
@@ -750,13 +826,14 @@ def _handle_assistant_intent(client, admin: int, text: str) -> bool:
 
     now = datetime.now(timezone.utc)
     today = f"{now.date().isoformat()}, {_WEEKDAYS_UK[now.weekday()]}"
-    intent = _ai.parse_assistant_intent(text, today)
-    if not intent:
-        return False
+    intent = _ai.parse_assistant_intent(text, today) or {}
     action = intent.get("action")
-    if action == "calendar":
-        return _handle_calendar_event(client, admin, intent)
     if action not in ("remind", "note", "cadence", "importance"):
+        # Not a contact command. A calendar event may have no contact at all —
+        # route it here, with a keyword net so it works even when the AI
+        # under-classifies or its JSON call failed.
+        if action == "calendar" or _looks_like_calendar(text):
+            return _handle_calendar_event(client, admin, intent, text)
         return False
 
     person = (intent.get("person") or "").strip()

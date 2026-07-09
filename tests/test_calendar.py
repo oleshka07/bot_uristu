@@ -112,6 +112,63 @@ def test_calendar_not_connected(client, monkeypatch):
     assert "не підключений" in fake.sent[-1]["text"]
 
 
+def _none_intent(monkeypatch):
+    """Simulate the AI under-classifying / failing — everything empty/none."""
+    monkeypatch.setattr(
+        "app.modules.insights.ai.parse_assistant_intent",
+        lambda text, today: {
+            "action": "none", "person": "", "text": "", "due_date": "",
+            "frequency": "", "importance": 0, "title": "", "start_time": "",
+            "end_time": "", "attendee_email": "", "google_meet": False,
+        },
+    )
+
+
+def test_calendar_keyword_net_and_text_parsing(client, monkeypatch):
+    """Even if the AI says 'none', a calendar phrase is caught and the date/
+    time are parsed from the raw text."""
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    monkeypatch.setattr(
+        "app.integrations.google.status", lambda db: {"connected": True}
+    )
+    captured = {}
+
+    def _fake_create(db, **kw):
+        captured.update(kw)
+        return {"summary": kw["summary"], "start": kw["start_local"],
+                "html_link": "http://x", "meet_link": None}
+
+    monkeypatch.setattr("app.integrations.google.create_event", _fake_create)
+
+    import datetime as _dt
+
+    fake = FakeClient()
+    dispatch(fake, _msg("додай зустріч на завтра о 15:00 тест"))
+    tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+    assert "Подію створено" in fake.sent[-1]["text"]
+    assert captured["start_local"] == f"{tomorrow}T15:00:00"
+    assert captured["end_local"] == f"{tomorrow}T16:00:00"
+
+
+def test_calendar_asks_for_time_when_missing(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    called = {"create": False}
+    monkeypatch.setattr(
+        "app.integrations.google.create_event",
+        lambda db, **kw: called.__setitem__("create", True) or {},
+    )
+    fake = FakeClient()
+    dispatch(fake, _msg("додай зустріч з Романом в календар roman@gmail.com"))
+    assert "О котрій" in fake.sent[-1]["text"]
+    assert called["create"] is False
+
+
 def test_format_reminder_shows_range():
     from app.modules.automation.briefs import format_reminder
 

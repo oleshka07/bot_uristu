@@ -432,8 +432,12 @@ def upcoming_events(
         return []
     out = []
     for event in resp.get("items", []):
+        # Skip all-day events (they only carry a 'date', no 'dateTime') — a
+        # timed "in ~1 hour" reminder makes no sense for them.
+        if not event.get("start", {}).get("dateTime"):
+            continue
         start = _event_start(event)
-        if start is None:  # all-day events have no dateTime — skip
+        if start is None:
             continue
         out.append(
             {
