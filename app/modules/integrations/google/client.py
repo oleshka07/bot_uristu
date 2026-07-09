@@ -13,6 +13,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+
+# Google may return a slightly different scope set than requested (e.g. it
+# echoes previously-granted scopes via include_granted_scopes). Tell oauthlib
+# not to hard-fail on that mismatch — we validate what we need at call time.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -29,10 +35,12 @@ logger = logging.getLogger("networking.google")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    # calendar.events = read AND create/update events (needed to add meetings
-    # from natural language). Requires re-authorising if you connected under
-    # the old read-only scope.
+    # calendar.events = create/update events (needed to add meetings from
+    # natural language). We also keep calendar.readonly: Google returns it
+    # among previously-granted scopes (include_granted_scopes), and the
+    # requested set must match the granted set or oauthlib rejects the token.
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
