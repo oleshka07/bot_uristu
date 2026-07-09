@@ -52,6 +52,19 @@ def format_brief(event: dict, contacts: list) -> str:
     return "\n".join(lines)
 
 
+def format_reminder(event: dict) -> str:
+    """A simple time reminder for a calendar event without a matched contact
+    (Chater-style: '⏰ 09:00–11:00 📅 Title · Через ~1 годину')."""
+    start = event["start"].strftime("%H:%M")
+    end = event.get("end")
+    when = f"{start}–{end.strftime('%H:%M')}" if end else start
+    lines = [f"⏰ <b>{when}</b>", f"📅 {_esc(event.get('summary'))}"]
+    if event.get("meet_link"):
+        lines.append(_esc(event["meet_link"]))
+    lines.append("\nЧерез ~1 годину")
+    return "\n".join(lines)
+
+
 def run_brief_check() -> int:
     """Send briefs for events starting ~lead minutes from now. Returns how
     many briefs were sent. Never raises."""
@@ -79,16 +92,19 @@ def run_brief_check() -> int:
             if not event["id"] or event["id"] in _briefed:
                 continue
             emails = [e for e in event.get("attendee_emails", []) if e]
-            if not emails:
-                continue
-            contacts = list(
-                db.scalars(
-                    select(Contact).where(Contact.email.in_(emails))
-                ).unique()
+            contacts = (
+                list(
+                    db.scalars(
+                        select(Contact).where(Contact.email.in_(emails))
+                    ).unique()
+                )
+                if emails
+                else []
             )
-            if not contacts:
-                continue
-            if telegram.send_message(format_brief(event, contacts)):
+            # Meeting with a known contact → rich brief; any other calendar
+            # event (e.g. a personal task) → a simple time reminder.
+            msg = format_brief(event, contacts) if contacts else format_reminder(event)
+            if telegram.send_message(msg):
                 _briefed.add(event["id"])
                 sent += 1
                 # Bound the memory of a long-lived process.

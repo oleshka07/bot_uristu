@@ -661,6 +661,85 @@ def _due_from_iso(s: str):
     return datetime.combine(d, time(9, 0, tzinfo=timezone.utc))
 
 
+def _handle_calendar_event(client, admin: int, intent: dict) -> bool:
+    """Create a Google Calendar event from a natural-language request.
+    Returns True (handled) whenever this looks like a calendar command, even
+    if creation fails — so we tell the user rather than fall back to search."""
+    from datetime import date as _date, datetime, timedelta
+
+    from app.integrations import google
+
+    date_s = (intent.get("due_date") or "").strip()[:10]
+    start_t = (intent.get("start_time") or "").strip()
+    if not date_s or not start_t:
+        return False  # not enough to build a timed event → let search try
+    try:
+        _date.fromisoformat(date_s)
+        sh, sm = (int(x) for x in start_t.split(":")[:2])
+        start_dt = datetime.strptime(f"{date_s} {sh:02d}:{sm:02d}", "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return False
+    start_local = start_dt.strftime("%Y-%m-%dT%H:%M:00")
+
+    end_t = (intent.get("end_time") or "").strip()
+    end_dt = None
+    if end_t:
+        try:
+            eh, em = (int(x) for x in end_t.split(":")[:2])
+            end_dt = start_dt.replace(hour=eh, minute=em)
+        except (ValueError, TypeError):
+            end_dt = None
+    if end_dt is None or end_dt <= start_dt:
+        end_dt = start_dt + timedelta(hours=1)
+    end_local = end_dt.strftime("%Y-%m-%dT%H:%M:00")
+
+    title = (intent.get("title") or "").strip() or "Зустріч"
+    email = (intent.get("attendee_email") or "").strip() or None
+    meet = bool(intent.get("google_meet"))
+    person = (intent.get("person") or "").strip()
+
+    with SessionLocal() as db:
+        if not email and person:
+            c = service.find_contact_by_name(db, person)
+            if c and c.email:
+                email = c.email
+        if not google.status(db).get("connected"):
+            client.send_message(
+                admin,
+                "📅 Google-календар не підключений. Підключи у веб-інтерфейсі: "
+                "Integrations → Google.",
+            )
+            return True
+        result = google.create_event(
+            db,
+            summary=title,
+            start_local=start_local,
+            end_local=end_local,
+            attendee_email=email,
+            add_meet=meet,
+        )
+    if not result:
+        client.send_message(
+            admin,
+            "⚠️ Не вдалося створити подію. Найімовірніше, треба перепідключити "
+            "Google — ми додали право на запис у календар. Веб: Integrations → "
+            "Google → Disconnect, потім Connect.",
+        )
+        return True
+
+    lines = [
+        f"✅ Подію створено: <b>{_esc(title)}</b>",
+        f"🗓 {date_s} о {sh:02d}:{sm:02d}"
+        + (f"–{end_dt.strftime('%H:%M')}" if end_t else ""),
+    ]
+    if email:
+        lines.append(f"👤 Гість: {_esc(email)}")
+    if result.get("meet_link"):
+        lines.append(f"🎥 {_esc(result['meet_link'])}")
+    client.send_message(admin, "\n".join(lines))
+    return True
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
@@ -675,6 +754,8 @@ def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     if not intent:
         return False
     action = intent.get("action")
+    if action == "calendar":
+        return _handle_calendar_event(client, admin, intent)
     if action not in ("remind", "note", "cadence", "importance"):
         return False
 
@@ -955,7 +1036,9 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
                 "• «запиши до Марії, що вона переїхала в Берлін»\n"
-                "• «спілкуватися з Іваном раз на місяць»\n\n"
+                "• «спілкуватися з Іваном раз на місяць»\n"
+                "• «додай зустріч на сьогодні о 14:00 з Сергієм»\n"
+                "• «зустріч завтра 11:00 через Google Meet, email …»\n\n"
                 "💬 Або постав питання — пошук по мережі "
                 "(«хто з моїх шарить у крипті?»)\n"
                 "🎤 Голосове — запишу в базу («познайомився з Андрієм, "

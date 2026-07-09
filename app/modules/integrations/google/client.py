@@ -29,7 +29,10 @@ logger = logging.getLogger("networking.google")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/calendar.readonly",
+    # calendar.events = read AND create/update events (needed to add meetings
+    # from natural language). Requires re-authorising if you connected under
+    # the old read-only scope.
+    "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
@@ -429,6 +432,7 @@ def upcoming_events(
                 "id": event.get("id", ""),
                 "summary": event.get("summary", "Зустріч"),
                 "start": start,
+                "end": _event_end(event),
                 "attendee_emails": [
                     a.get("email", "").lower()
                     for a in event.get("attendees", [])
@@ -438,6 +442,69 @@ def upcoming_events(
             }
         )
     return out
+
+
+def _primary_timezone(calendar) -> str:
+    """The calendar's own timezone, so a '14:00' we create lands at the wall
+    clock the user means. Falls back to UTC on any hiccup."""
+    try:
+        cal = calendar.calendars().get(calendarId="primary").execute()
+        return cal.get("timeZone") or "UTC"
+    except Exception:  # pragma: no cover - network
+        return "UTC"
+
+
+def create_event(
+    db: Session,
+    *,
+    summary: str,
+    start_local: str,
+    end_local: str,
+    attendee_email: str | None = None,
+    add_meet: bool = False,
+) -> dict | None:
+    """Create a calendar event from wall-clock local times.
+
+    ``start_local``/``end_local`` are naive ISO strings like
+    "2026-07-09T14:00:00" — interpreted in the calendar's own timezone.
+    Returns {summary, start, html_link, meet_link} or None on failure
+    (not connected / missing write scope / API error)."""
+    creds = _load_credentials(db)
+    if creds is None:
+        return None
+    try:
+        from googleapiclient.discovery import build
+
+        calendar = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        tz = _primary_timezone(calendar)
+        body: dict = {
+            "summary": summary,
+            "start": {"dateTime": start_local, "timeZone": tz},
+            "end": {"dateTime": end_local, "timeZone": tz},
+        }
+        if attendee_email:
+            body["attendees"] = [{"email": attendee_email}]
+        params: dict = {"calendarId": "primary", "body": body}
+        if add_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": f"meet-{start_local}",
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+            params["conferenceDataVersion"] = 1
+        if attendee_email:
+            params["sendUpdates"] = "all"  # email the guest an invite
+        created = calendar.events().insert(**params).execute()
+        return {
+            "summary": created.get("summary", summary),
+            "start": created.get("start", {}).get("dateTime", start_local),
+            "html_link": created.get("htmlLink"),
+            "meet_link": created.get("hangoutLink"),
+        }
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("create_event failed: %s", exc)
+        return None
 
 
 # ── Outbound email (for the daily digest) ────────────────────────────────────
@@ -479,6 +546,19 @@ def _event_start(event: dict) -> datetime | None:
         return None
     try:
         if len(raw) == 10:  # all-day date "YYYY-MM-DD"
+            return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _event_end(event: dict) -> datetime | None:
+    end = event.get("end", {})
+    raw = end.get("dateTime") or end.get("date")
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10:
             return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:

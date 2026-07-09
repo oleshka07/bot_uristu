@@ -420,7 +420,9 @@ _ASSISTANT_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["remind", "note", "cadence", "importance", "none"],
+            "enum": [
+                "remind", "note", "cadence", "importance", "calendar", "none",
+            ],
         },
         "person": {"type": "string"},
         "text": {"type": "string"},
@@ -433,8 +435,17 @@ _ASSISTANT_SCHEMA = {
             ],
         },
         "importance": {"type": "integer"},  # 1..3, or 0 if not specified
+        # Calendar fields (action == "calendar")
+        "title": {"type": "string"},
+        "start_time": {"type": "string"},  # "HH:MM" 24h, or ""
+        "end_time": {"type": "string"},    # "HH:MM" 24h, or ""
+        "attendee_email": {"type": "string"},
+        "google_meet": {"type": "boolean"},
     },
-    "required": ["action", "person", "text", "due_date", "frequency", "importance"],
+    "required": [
+        "action", "person", "text", "due_date", "frequency", "importance",
+        "title", "start_time", "end_time", "attendee_email", "google_meet",
+    ],
     "additionalProperties": False,
 }
 
@@ -466,6 +477,13 @@ def parse_assistant_intent(text: str, today: str) -> dict | None:
         "місяць»). Заповни person і frequency.\n"
         "• importance — змінити важливість 1..3 («Олег дуже важливий»=3). "
         "Заповни person і importance.\n"
+        "• calendar — додати подію/зустріч у календар («додай зустріч на "
+        "сьогодні о 14:00 з Сергієм», «подія завтра з 9 до 11 відкриття "
+        "рахунків»). Заповни: title (коротка назва події, напр. «Зустріч з "
+        "Сергієм» або «Відкриття рахунків банку»), due_date (ISO дата події), "
+        "start_time («HH:MM» 24-год), end_time (якщо вказано діапазон, інакше "
+        "\"\"), attendee_email (email гостя, якщо є), google_meet (true, якщо "
+        "просять через Google Meet/онлайн). person — імʼя людини, якщо згадана.\n"
         "• none — це НЕ команда: питання чи пошук по мережі («хто з моїх "
         "у крипті?», «знайди Марію»). Став action=none.\n"
         "Якщо не впевнений — став none. Порожні поля лишай порожніми рядками "
