@@ -717,10 +717,48 @@ def _cal_time_from_text(text: str):
     )
     if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
         return int(m.group(1)), int(m.group(2))
-    m = re.search(r"(?:о|на)\s+(\d{1,2})(?:\s*(?:годин|год))?(?!\d)", t)
+    m = re.search(r"(?:о|на|в|у)\s+(\d{1,2})(?:\s*(?:годин\w*|год))?(?!\d)", t)
     if m and int(m.group(1)) < 24:
         return int(m.group(1)), 0
     return None
+
+
+def _is_bare_time(text: str) -> bool:
+    """True if the message is essentially just a time — '19', '19:00',
+    'о 19', 'в 19:30', '9 год' — used to finish a pending calendar event."""
+    import re
+
+    return bool(
+        re.fullmatch(
+            r"(?:о|на|в|у)?\s*\d{1,2}(?:[:.]\d{2})?\s*(?:годин\w*|год)?",
+            text.strip().lower(),
+        )
+    )
+
+
+def _cal_title_from_text(text: str) -> str:
+    """Best-effort event title from free text: strip command words, date,
+    time, email, Meet, and 'з <Name>'. Empty when nothing meaningful remains."""
+    import re
+
+    t = text
+    t = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", " ", t)
+    t = re.sub(r"через\s+google\s*meet", " ", t, flags=re.I)
+    t = re.sub(r"\b(google\s*meet|онлайн|гугл\s*міт)\b", " ", t, flags=re.I)
+    t = re.sub(r"(?:о|на|в|у)\s*\d{1,2}(?:[:.]\d{2})?(?:\s*годин\w*)?", " ", t, flags=re.I)
+    t = re.sub(r"\b(будь\s+ласка|для\s+мене)\b", " ", t, flags=re.I)
+    t = re.sub(
+        r"\b(додай|добав\w*|додати|постав\w*|заплануй|створи|признач\w*)\b",
+        " ", t, flags=re.I,
+    )
+    t = re.sub(r"\b(зустріч\w*|поді\w*|мітинг\w*|дзвінок|созвон)\b", " ", t, flags=re.I)
+    t = re.sub(r"календар\w*", " ", t, flags=re.I)
+    t = re.sub(r"\b(сьогодні|завтра|післязавтра|позавтра)\b", " ", t, flags=re.I)
+    t = re.sub(r"\bз\s+[А-ЯІЇЄA-Z][\w'’]+", " ", t)  # "з Романом"
+    t = re.sub(r"[,\.]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" ,.-—")
+    t = re.sub(r"^(?:на|в|у|о|з|про)\s+", "", t).strip()
+    return t if 2 <= len(t) <= 60 else ""
 
 
 def _cal_email_from_text(text: str):
@@ -730,45 +768,21 @@ def _cal_email_from_text(text: str):
     return m.group(0) if m else None
 
 
-def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
-    """Create a Google Calendar event from a natural-language request. Parses
-    date/time in Python (not trusting the model), asks for the time if it's
-    missing, and always returns True — a calendar request never falls through
-    to network search."""
-    from datetime import date as _date, datetime, timedelta, timezone
+# A calendar event we've started but are waiting on the time for, per admin.
+# Process-lifetime, single-user — a restart just forgets a half-finished ask.
+_pending_event: dict[int, dict] = {}
+_PENDING_TTL = 900  # seconds
+
+
+def _create_calendar_event(
+    client, admin, *, d, hm, endhm, title, email, meet, person
+) -> bool:
+    from datetime import datetime, timedelta
 
     from app.integrations import google
 
-    today = datetime.now(timezone.utc).date()
-    ds = (intent.get("due_date") or "").strip()[:10]
-    try:
-        d = _date.fromisoformat(ds)
-    except ValueError:
-        d = None
-    if d is None:
-        d = _cal_date_from_text(text, today) or today
-
-    hm = _cal_hm(intent.get("start_time")) or _cal_time_from_text(text)
-    title = (intent.get("title") or "").strip() or (
-        "Зустріч" if "зустріч" in text.lower() else "Подія"
-    )
-    email = (intent.get("attendee_email") or "").strip() or _cal_email_from_text(text)
-    meet = bool(intent.get("google_meet")) or any(
-        w in text.lower() for w in ("google meet", "meet", "онлайн", "гугл міт")
-    )
-    person = (intent.get("person") or "").strip()
-
-    if hm is None:
-        client.send_message(
-            admin,
-            f"📅 Готую подію «{_esc(title)}» на {d.isoformat()}. "
-            "О котрій? Напиши час, напр. «о 15:00».",
-        )
-        return True
-
     sh, sm = hm
     start_dt = datetime(d.year, d.month, d.day, sh, sm)
-    endhm = _cal_hm(intent.get("end_time"))
     end_dt = datetime(d.year, d.month, d.day, endhm[0], endhm[1]) if endhm else None
     if end_dt is None or end_dt <= start_dt:
         end_dt = start_dt + timedelta(hours=1)
@@ -816,13 +830,87 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
     return True
 
 
+def _complete_pending_event(client, admin, hm) -> bool:
+    """Finish a calendar event we asked the time for, using the remembered
+    title / date / guest."""
+    from datetime import date as _date
+
+    p = _pending_event.pop(admin, None)
+    if not p:
+        return False
+    return _create_calendar_event(
+        client, admin,
+        d=_date.fromisoformat(p["date"]), hm=hm, endhm=p.get("endhm"),
+        title=p["title"], email=p.get("email"), meet=p.get("meet", False),
+        person=p.get("person", ""),
+    )
+
+
+def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
+    """Create a Google Calendar event from a natural-language request. Parses
+    date/time in Python (not trusting the model); if the time is missing it
+    remembers the half-built event and asks for it. Always returns True — a
+    calendar request never falls through to network search."""
+    import time as _time
+    from datetime import date as _date, datetime, timezone
+
+    today = datetime.now(timezone.utc).date()
+    ds = (intent.get("due_date") or "").strip()[:10]
+    try:
+        d = _date.fromisoformat(ds)
+    except ValueError:
+        d = None
+    if d is None:
+        d = _cal_date_from_text(text, today) or today
+
+    hm = _cal_hm(intent.get("start_time")) or _cal_time_from_text(text)
+    endhm = _cal_hm(intent.get("end_time"))
+    title = (
+        (intent.get("title") or "").strip()
+        or _cal_title_from_text(text)
+        or ("Зустріч" if "зустріч" in text.lower() else "Подія")
+    )
+    email = (intent.get("attendee_email") or "").strip() or _cal_email_from_text(text)
+    meet = bool(intent.get("google_meet")) or any(
+        w in text.lower() for w in ("google meet", "meet", "онлайн", "гугл міт")
+    )
+    person = (intent.get("person") or "").strip()
+
+    if hm is None:
+        _pending_event[admin] = {
+            "date": d.isoformat(), "title": title, "email": email,
+            "meet": meet, "person": person, "endhm": endhm, "ts": _time.time(),
+        }
+        client.send_message(
+            admin,
+            f"📅 Готую подію «{_esc(title)}» на {d.isoformat()}. "
+            "О котрій? Напиши час, напр. «о 15:00».",
+        )
+        return True
+
+    return _create_calendar_event(
+        client, admin, d=d, hm=hm, endhm=endhm, title=title,
+        email=email, meet=meet, person=person,
+    )
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
     handled; False means 'not a command' → caller falls back to search."""
+    import time as _time
     from datetime import datetime, timezone
 
     from app.modules.insights import ai as _ai
+
+    # Waiting on a time to finish a calendar event? A bare time reply ends it.
+    if admin in _pending_event and _is_bare_time(text):
+        if _time.time() - _pending_event[admin].get("ts", 0) <= _PENDING_TTL:
+            hm = _cal_hm(text.strip()) or _cal_time_from_text(text)
+            if hm:
+                return _complete_pending_event(client, admin, hm)
+        else:
+            _pending_event.pop(admin, None)
 
     now = datetime.now(timezone.utc)
     today = f"{now.date().isoformat()}, {_WEEKDAYS_UK[now.weekday()]}"

@@ -2,9 +2,20 @@
 
 import datetime as dt
 
+import pytest
+
 from app.modules.telegram_bot.handlers import dispatch
 
 from test_telegram_bot import FakeClient
+
+
+@pytest.fixture(autouse=True)
+def _clear_pending():
+    from app.modules.telegram_bot import handlers
+
+    handlers._pending_event.clear()
+    yield
+    handlers._pending_event.clear()
 
 
 def _msg(text: str) -> dict:
@@ -167,6 +178,72 @@ def test_calendar_asks_for_time_when_missing(client, monkeypatch):
     dispatch(fake, _msg("додай зустріч з Романом в календар roman@gmail.com"))
     assert "О котрій" in fake.sent[-1]["text"]
     assert called["create"] is False
+
+
+def test_time_with_v_prefix_parsed_in_one_shot(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    monkeypatch.setattr(
+        "app.integrations.google.status", lambda db: {"connected": True}
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "app.integrations.google.create_event",
+        lambda db, **kw: captured.update(kw) or {"summary": kw["summary"],
+                                                 "start": kw["start_local"],
+                                                 "html_link": "x", "meet_link": None},
+    )
+    fake = FakeClient()
+    dispatch(fake, _msg("додай зустріч на завтра футбол на кемпі в 19"))
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    assert "Подію створено" in fake.sent[-1]["text"]
+    assert captured["start_local"] == f"{tomorrow}T19:00:00"
+    assert "футбол на кемпі" in captured["summary"]
+
+
+def test_pending_event_remembers_and_completes_on_bare_time(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    monkeypatch.setattr(
+        "app.integrations.google.status", lambda db: {"connected": True}
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "app.integrations.google.create_event",
+        lambda db, **kw: captured.update(kw) or {"summary": kw["summary"],
+                                                 "start": kw["start_local"],
+                                                 "html_link": "x", "meet_link": None},
+    )
+    # First: no time → the bot asks and remembers.
+    fake = FakeClient()
+    dispatch(fake, _msg("додай зустріч на завтра футбол на кемпі"))
+    assert "О котрій" in fake.sent[-1]["text"]
+    assert not captured
+
+    # Then: a bare time finishes the remembered event.
+    fake2 = FakeClient()
+    dispatch(fake2, _msg("19"))
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    assert "Подію створено" in fake2.sent[-1]["text"]
+    assert captured["start_local"] == f"{tomorrow}T19:00:00"
+    assert "футбол на кемпі" in captured["summary"]
+
+
+def test_bare_time_helpers():
+    from app.modules.telegram_bot.handlers import _is_bare_time, _cal_title_from_text
+
+    assert _is_bare_time("19")
+    assert _is_bare_time("19:00")
+    assert _is_bare_time("о 19")
+    assert _is_bare_time("в 19:30")
+    assert not _is_bare_time("додай зустріч завтра")
+    assert _cal_title_from_text(
+        "додай зустріч на завтра футбол на кемпі в 19"
+    ) == "футбол на кемпі"
 
 
 def test_format_reminder_shows_range():
