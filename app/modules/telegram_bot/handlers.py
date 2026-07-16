@@ -60,7 +60,26 @@ def _draft_keyboard(draft_id: int, has_draft: bool, outreach: bool = False) -> d
     row2.append({"text": "📇 Контакти", "callback_data": f"d:c:{draft_id}"})
     if outreach:
         row2.append({"text": "🚫 Стоп-лист", "callback_data": f"d:x:{draft_id}"})
+    else:
+        # Reply cards: let the user switch this person to manual replies.
+        row2.append({"text": "🔕 Пауза", "callback_data": f"d:p:{draft_id}"})
     return {"inline_keyboard": [row1, row2] if row2 else [row1]}
+
+
+def _paused_notice(contact, text: str) -> str:
+    return (
+        f"🔕 <b>{_contact_link(contact)}</b> — ти відповідаєш сам\n"
+        f"«{_esc((text or '')[:500])}»"
+    )
+
+
+def _paused_keyboard(draft_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "✍️ Скласти відповідь", "callback_data": f"d:g:{draft_id}"}],
+            [{"text": "▶️ Увімкнути авто-відповіді", "callback_data": f"d:r:{draft_id}"}],
+        ]
+    }
 
 
 def _translate_keyboard(draft_id: int) -> dict:
@@ -321,7 +340,7 @@ def handle_business_message(client, msg: dict) -> None:
         return
 
     with SessionLocal() as db:
-        draft, contact, is_new = service.handle_incoming(
+        draft, contact, is_new, status = service.handle_incoming(
             db,
             chat_id=chat_id,
             text=text,
@@ -331,6 +350,17 @@ def handle_business_message(client, msg: dict) -> None:
             username=sender.get("username") or chat.get("username"),
             business_connection_id=bc_id,
         )
+        if status == "paused":
+            # Logged for context, but no auto-draft — quiet heads-up only.
+            if admin and draft is not None:
+                sent = client.send_message(
+                    admin,
+                    _paused_notice(contact, draft.incoming_text),
+                    reply_markup=_paused_keyboard(draft.id),
+                )
+                if sent:
+                    service.set_admin_message(db, draft, sent.get("message_id", 0))
+            return
         if draft is None:
             return  # conversation-ender: logged, no reply needed
         if admin:
@@ -379,6 +409,44 @@ def handle_callback(client, cb: dict) -> None:
         handled = False
 
         # ── Non-terminal actions (the card stays pending) ────────────────
+        if action == "p":  # pause auto-replies for this person
+            contact = db.get(Contact, draft.contact_id)
+            if contact:
+                contact.auto_reply_paused = True
+                db.commit()
+            client.answer_callback(cb_id, "🔕 Пауза: далі відповідаєш сам")
+            return
+        if action == "r":  # resume auto-replies
+            contact = db.get(Contact, draft.contact_id)
+            if contact:
+                contact.auto_reply_paused = False
+                db.commit()
+            client.answer_callback(cb_id, "▶️ Авто-відповіді увімкнено")
+            if msg and contact:
+                client.edit_message_text(
+                    msg["chat"]["id"],
+                    msg["message_id"],
+                    _paused_notice(contact, draft.incoming_text)
+                    + "\n\n▶️ Авто-відповіді знову увімкнені.",
+                )
+            return
+        if action == "g":  # compose a reply on demand for a held (paused) draft
+            contact = db.get(Contact, draft.contact_id)
+            client.answer_callback(cb_id, "Складаю…")
+            from app.modules.insights import ai as _ai
+
+            new_text = _ai.draft_reply(contact, draft.incoming_text) or ""
+            if new_text.strip() == "[SKIP]":
+                new_text = ""
+            service.update_draft_text(db, draft, new_text)
+            if msg:
+                client.edit_message_text(
+                    msg["chat"]["id"],
+                    msg["message_id"],
+                    _render_draft(contact, draft),
+                    reply_markup=_draft_keyboard(draft.id, bool(new_text.strip())),
+                )
+            return
         if action == "c":
             contact = db.get(Contact, draft.contact_id)
             client.answer_callback(cb_id)
@@ -1197,6 +1265,9 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/find &lt;ім'я&gt; — пошук за іменем\n"
                 "/timeline &lt;ім'я&gt; — вся історія стосунку\n"
                 "/similar &lt;ім'я&gt; — схожі та повʼязані люди\n"
+                "/pause &lt;ім'я&gt; — я відповідаю цьому сам (без чернеток)\n"
+                "/resume &lt;ім'я&gt; — повернути авто-відповіді\n"
+                "/paused — хто на паузі\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
@@ -1509,6 +1580,52 @@ def _handle_command(client, admin: int, text: str) -> None:
                 admin,
                 text or "AI недоступний — рефлексія потребує ключа (OpenAI/Anthropic).",
             )
+        elif cmd in ("pause", "resume"):
+            if not arg.strip():
+                client.send_message(
+                    admin, f"Використання: /{cmd} &lt;ім'я&gt;"
+                )
+                return
+            contact = service.find_contact_by_name(db, arg.strip())
+            if contact is None:
+                client.send_message(admin, f"Не знайшов контакт «{_esc(arg)}».")
+                return
+            contact.auto_reply_paused = cmd == "pause"
+            db.commit()
+            if cmd == "pause":
+                client.send_message(
+                    admin,
+                    f"🔕 <b>{_contact_link(contact)}</b> — авто-відповіді на паузі. "
+                    "Повідомлення логуються, чернетки не складаються. "
+                    "Увімкнути назад: /resume.",
+                )
+            else:
+                client.send_message(
+                    admin,
+                    f"▶️ <b>{_contact_link(contact)}</b> — авто-відповіді знову "
+                    "увімкнені.",
+                )
+        elif cmd in ("paused", "muted"):
+            from sqlalchemy import select
+
+            paused = list(
+                db.scalars(
+                    select(models.Contact).where(
+                        models.Contact.auto_reply_paused.is_(True)
+                    )
+                ).unique()
+            )
+            if not paused:
+                client.send_message(
+                    admin,
+                    "Нікого на паузі. Постав: /pause &lt;ім'я&gt; — тоді бот "
+                    "лише логуватиме їхні повідомлення, без чернеток.",
+                )
+                return
+            lines = ["🔕 <b>На паузі (відповідаєш сам)</b>"]
+            for c in paused:
+                lines.append(f"• {_contact_link(c)}")
+            client.send_message(admin, "\n".join(lines))
         elif cmd in ("timeline", "history"):
             if not arg.strip():
                 client.send_message(admin, "Використання: /timeline &lt;ім'я&gt;")

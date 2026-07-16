@@ -28,6 +28,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "do_not_contact": "BOOLEAN DEFAULT FALSE",
         "style_examples": "TEXT",
         "importance": "INTEGER DEFAULT 0",
+        "auto_reply_paused": "BOOLEAN DEFAULT FALSE",
     },
 }
 

@@ -222,9 +222,13 @@ def handle_incoming(
     last_name: str | None,
     username: str | None,
     business_connection_id: str | None,
-) -> tuple[TelegramDraft | None, Contact, bool]:
+) -> tuple[TelegramDraft | None, Contact, bool, str]:
     """Process an incoming business DM end-to-end (steps 1–4 above).
-    Returns draft=None for conversation-enders (logged, but no reply)."""
+
+    Returns (draft, contact, is_new, status). status is one of:
+    "drafted" (a reply is ready), "closer"/"skip" (logged, no reply needed),
+    "paused" (auto-reply off for this contact — logged; ``draft`` is a held,
+    text-less draft the user can fill on demand)."""
     contact, is_new = find_or_create_contact(
         db, chat_id, first_name, last_name, username
     )
@@ -250,12 +254,30 @@ def handle_incoming(
     # Conversation closers ("ок, дякую", "все, пока") need no reply — a
     # drafted answer to a goodbye creates infinite politeness loops.
     if is_closer(text):
-        return None, contact, is_new
+        return None, contact, is_new, "closer"
+
+    # Auto-reply paused for this person: keep the log/context, but don't spend
+    # an AI call drafting. Hold a text-less draft so the user can compose on
+    # demand (the ✍️ button), and let the caller send a quiet heads-up.
+    if contact.auto_reply_paused:
+        held = TelegramDraft(
+            contact_id=contact.id,
+            chat_id=chat_id,
+            business_connection_id=business_connection_id,
+            kind=DraftKind.reply,
+            incoming_text=text,
+            draft_text="",
+            status=DraftStatus.pending,
+        )
+        db.add(held)
+        db.commit()
+        db.refresh(held)
+        return held, contact, is_new, "paused"
 
     draft_text = ai.draft_reply(contact, text) or ""
     if draft_text.strip() == "[SKIP]":
         # The model judged this a conversation-ender in context.
-        return None, contact, is_new
+        return None, contact, is_new, "skip"
 
     draft = TelegramDraft(
         contact_id=contact.id,
@@ -269,7 +291,7 @@ def handle_incoming(
     db.add(draft)
     db.commit()
     db.refresh(draft)
-    return draft, contact, is_new
+    return draft, contact, is_new, "drafted"
 
 
 def get_draft(db: Session, draft_id: int) -> TelegramDraft | None:

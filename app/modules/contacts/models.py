@@ -116,6 +116,10 @@ class Contact(Base):
     # Stop-list: one-off contacts the outreach queue must never suggest.
     do_not_contact: Mapped[bool] = mapped_column(default=False)
 
+    # "I answer this person myself": keep logging their messages and context,
+    # but don't auto-draft replies — just a quiet heads-up instead.
+    auto_reply_paused: Mapped[bool] = mapped_column(default=False)
+
     # Importance for queue priority: 0=auto (derived from dialogue depth),
     # 1=низька, 2=звичайна, 3=висока (ties to the owner's goals/projects).
     importance: Mapped[int] = mapped_column(default=0)
