@@ -73,13 +73,27 @@ def _paused_notice(contact, text: str) -> str:
     )
 
 
-def _paused_keyboard(draft_id: int) -> dict:
-    return {
-        "inline_keyboard": [
-            [{"text": "✍️ Скласти відповідь", "callback_data": f"d:g:{draft_id}"}],
-            [{"text": "▶️ Увімкнути авто-відповіді", "callback_data": f"d:r:{draft_id}"}],
-        ]
-    }
+def _paused_keyboard(draft_id: int, flags: set | None = None) -> dict:
+    flags = flags or set()
+    rows = []
+    action_row = []
+    if "meeting" in flags:
+        action_row.append(
+            {"text": "➕ У календар", "callback_data": f"d:cal:{draft_id}"}
+        )
+    if "task" in flags:
+        action_row.append(
+            {"text": "⏰ Нагадати", "callback_data": f"d:tk:{draft_id}"}
+        )
+    if action_row:
+        rows.append(action_row)
+    rows.append(
+        [{"text": "✍️ Скласти відповідь", "callback_data": f"d:g:{draft_id}"}]
+    )
+    rows.append(
+        [{"text": "▶️ Увімкнути авто-відповіді", "callback_data": f"d:r:{draft_id}"}]
+    )
+    return {"inline_keyboard": rows}
 
 
 def _translate_keyboard(draft_id: int) -> dict:
@@ -352,11 +366,13 @@ def handle_business_message(client, msg: dict) -> None:
         )
         if status == "paused":
             # Logged for context, but no auto-draft — quiet heads-up only.
+            # Still detect a meeting / task and offer one-tap actions.
             if admin and draft is not None:
+                flags = _detect_incoming_intent(draft.incoming_text or "")
                 sent = client.send_message(
                     admin,
                     _paused_notice(contact, draft.incoming_text),
-                    reply_markup=_paused_keyboard(draft.id),
+                    reply_markup=_paused_keyboard(draft.id, flags),
                 )
                 if sent:
                     service.set_admin_message(db, draft, sent.get("message_id", 0))
@@ -445,6 +461,32 @@ def handle_callback(client, cb: dict) -> None:
                     msg["message_id"],
                     _render_draft(contact, draft),
                     reply_markup=_draft_keyboard(draft.id, bool(new_text.strip())),
+                )
+            return
+        if action == "cal":  # add the incoming message's meeting to the calendar
+            client.answer_callback(cb_id, "Додаю в календар…")
+            if admin:
+                _handle_calendar_event(client, admin, {}, draft.incoming_text or "")
+            return
+        if action == "tk":  # remember the incoming request as a reminder
+            contact = db.get(Contact, draft.contact_id)
+            from datetime import datetime, timedelta, timezone
+
+            from app.modules.automation import reminders as _reminders
+
+            due = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+                hour=9, minute=0, second=0, microsecond=0
+            )
+            what = (draft.incoming_text or "").strip()[:120] or (
+                f"відповісти {contact.full_name if contact else ''}".strip()
+            )
+            _reminders.create_reminder(db, contact, what, due)
+            client.answer_callback(cb_id, "⏰ Нагадаю завтра о 09:00")
+            if admin:
+                client.send_message(
+                    admin,
+                    f"⏰ Нагадаю завтра о 09:00: <b>{_esc(what)}</b>"
+                    + (f"\n👤 {_contact_link(contact)}" if contact else ""),
                 )
             return
         if action == "c":
@@ -780,12 +822,13 @@ def _cal_time_from_text(text: str):
     import re
 
     t = text.lower()
-    m = re.search(r"(?:о|на|в|у)\s*(\d{1,2})[:.](\d{2})", t) or re.search(
+    m = re.search(r"\b(?:о|на|в|у)\s*(\d{1,2})[:.](\d{2})", t) or re.search(
         r"(\d{1,2}):(\d{2})", t
     )
     if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
         return int(m.group(1)), int(m.group(2))
-    m = re.search(r"(?:о|на|в|у)\s+(\d{1,2})(?:\s*(?:годин\w*|год))?(?!\d)", t)
+    # \b before the preposition so "до 16" / "по 17" don't match as "о 16".
+    m = re.search(r"\b(?:о|на|в|у)\s+(\d{1,2})(?:\s*(?:годин\w*|год))?(?!\d)", t)
     if m and int(m.group(1)) < 24:
         return int(m.group(1)), 0
     return None
@@ -813,7 +856,12 @@ def _cal_title_from_text(text: str) -> str:
     t = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", " ", t)
     t = re.sub(r"через\s+google\s*meet", " ", t, flags=re.I)
     t = re.sub(r"\b(google\s*meet|онлайн|гугл\s*міт)\b", " ", t, flags=re.I)
-    t = re.sub(r"(?:о|на|в|у)\s*\d{1,2}(?:[:.]\d{2})?(?:\s*годин\w*)?", " ", t, flags=re.I)
+    t = re.sub(
+        r"(?:з|від)\s*\d{1,2}(?:[:.]\d{2})?\s*(?:до|по|-|–|—)\s*\d{1,2}(?:[:.]\d{2})?",
+        " ", t, flags=re.I,
+    )
+    t = re.sub(r"\b(?:о|на|в|у)\s*\d{1,2}(?:[:.]\d{2})?(?:\s*годин\w*)?", " ", t, flags=re.I)
+    t = re.sub(r"\b(ок|ok|окей)\b", " ", t, flags=re.I)
     t = re.sub(r"\b(будь\s+ласка|для\s+мене)\b", " ", t, flags=re.I)
     t = re.sub(
         r"\b(додай|добав\w*|додати|постав\w*|заплануй|створи|признач\w*)\b",
@@ -827,6 +875,57 @@ def _cal_title_from_text(text: str) -> str:
     t = re.sub(r"\s+", " ", t).strip(" ,.-—")
     t = re.sub(r"^(?:на|в|у|о|з|про)\s+", "", t).strip()
     return t if 2 <= len(t) <= 60 else ""
+
+
+def _cal_range_from_text(text: str):
+    """Parse a time range: 'з 15 до 16', 'з 9:30 до 11', '15-16', '15:00–16:30'.
+    Returns ((sh, sm), (eh, em)) or None."""
+    import re
+
+    t = text.lower()
+    for pat in (
+        r"(?:з|від|c)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:до|по|-|–|—)\s*(\d{1,2})(?:[:.](\d{2}))?",
+        r"(\d{1,2})(?:[:.](\d{2}))?\s*[-–—]\s*(\d{1,2})(?:[:.](\d{2}))?",
+    ):
+        m = re.search(pat, t)
+        if m:
+            sh, sm = int(m.group(1)), int(m.group(2) or 0)
+            eh, em = int(m.group(3)), int(m.group(4) or 0)
+            if sh < 24 and eh < 24 and sm < 60 and em < 60:
+                return (sh, sm), (eh, em)
+    return None
+
+
+_TASK_VERBS = (
+    "можеш", "зможеш", "потрібно", "треба", "зроби", "зробити", "підготуй",
+    "підготувати", "надішли", "надіслати", "скинь", "перешли", "зателефонуй",
+    "подзвони", "передай", "глянь", "подивись", "перевір", "нагадай",
+)
+_MEETING_NOUNS = (
+    "зустріч", "мітинг", "созвон", "зідзвон", "дзвінок", "meet", "meeting",
+    "побач", "каві", "каву", "ланч", "обід",
+)
+
+
+def _detect_incoming_intent(text: str) -> set:
+    """Lightweight, no-AI signal detection for a paused contact's message:
+    does it look like a meeting to schedule and/or a task to remember?"""
+    t = text.lower()
+    flags = set()
+    rng = _cal_range_from_text(text)
+    has_time = _cal_time_from_text(text) is not None or rng is not None
+    date_word = any(
+        w in t for w in (
+            "сьогодні", "завтра", "післязавтра", "понеділок", "вівторок",
+            "серед", "четвер", "пятниц", "пʼятниц", "субот", "неділ",
+        )
+    )
+    meeting_noun = any(w in t for w in _MEETING_NOUNS)
+    if has_time and (meeting_noun or date_word or rng):
+        flags.add("meeting")
+    if any(v in t for v in _TASK_VERBS):
+        flags.add("task")
+    return flags
 
 
 def _cal_email_from_text(text: str):
@@ -931,8 +1030,13 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
     if d is None:
         d = _cal_date_from_text(text, today) or today
 
-    hm = _cal_hm(intent.get("start_time")) or _cal_time_from_text(text)
-    endhm = _cal_hm(intent.get("end_time"))
+    rng = _cal_range_from_text(text)
+    hm = (
+        _cal_hm(intent.get("start_time"))
+        or _cal_time_from_text(text)
+        or (rng[0] if rng else None)
+    )
+    endhm = _cal_hm(intent.get("end_time")) or (rng[1] if rng else None)
     title = (
         (intent.get("title") or "").strip()
         or _cal_title_from_text(text)
