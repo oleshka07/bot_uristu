@@ -86,6 +86,23 @@ def test_range_and_intent_helpers():
     assert _detect_incoming_intent("ок дякую") == set()
 
 
+def test_reminder_deadline_parsing():
+    from datetime import datetime, timedelta, timezone
+
+    from app.modules.telegram_bot.handlers import _reminder_due_from_text
+
+    # A Wednesday 10:00 UTC.
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc)
+    due = _reminder_due_from_text("можеш підготувати звіт до понеділка?", now)
+    assert due.weekday() == 6  # Sunday — the evening before Monday
+    assert due.hour == 18
+
+    # No deadline → tomorrow 09:00.
+    d2 = _reminder_due_from_text("зроби це, будь ласка", now)
+    assert d2.date() == (now + timedelta(days=1)).date()
+    assert d2.hour == 9
+
+
 def _paused_contact(db, chat_id, incoming):
     from app.modules.contacts.models import Contact, Frequency
     from app.modules.telegram_bot.models import (

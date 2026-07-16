@@ -470,22 +470,22 @@ def handle_callback(client, cb: dict) -> None:
             return
         if action == "tk":  # remember the incoming request as a reminder
             contact = db.get(Contact, draft.contact_id)
-            from datetime import datetime, timedelta, timezone
+            from datetime import datetime, timezone
 
             from app.modules.automation import reminders as _reminders
 
-            due = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
-                hour=9, minute=0, second=0, microsecond=0
-            )
+            now = datetime.now(timezone.utc)
+            due = _reminder_due_from_text(draft.incoming_text or "", now)
             what = (draft.incoming_text or "").strip()[:120] or (
                 f"відповісти {contact.full_name if contact else ''}".strip()
             )
             _reminders.create_reminder(db, contact, what, due)
-            client.answer_callback(cb_id, "⏰ Нагадаю завтра о 09:00")
+            when = f"{due.date().isoformat()} о {due.strftime('%H:%M')}"
+            client.answer_callback(cb_id, f"⏰ Нагадаю {when}")
             if admin:
                 client.send_message(
                     admin,
-                    f"⏰ Нагадаю завтра о 09:00: <b>{_esc(what)}</b>"
+                    f"⏰ Нагадаю <b>{when}</b>: {_esc(what)}"
                     + (f"\n👤 {_contact_link(contact)}" if contact else ""),
                 )
             return
@@ -772,9 +772,11 @@ def _due_from_iso(s: str):
 
 
 _UA_REL_DAYS = (("післязавтра", 2), ("позавтра", 2), ("завтра", 1), ("сьогодні", 0))
+# Weekday stems, matched at a word boundary so "понеділка" doesn't hit the
+# "неділ" (Sunday) stem hiding inside it.
 _UA_WEEKDAYS = {
-    "понеділок": 0, "вівторок": 1, "середу": 2, "середа": 2, "четвер": 3,
-    "пʼятниц": 4, "пятниц": 4, "суботу": 5, "субот": 5, "неділ": 6,
+    "понеділ": 0, "вівтор": 1, "серед": 2, "четвер": 3,
+    "пʼятниц": 4, "пятниц": 4, "субот": 5, "неділ": 6,
 }
 
 
@@ -790,6 +792,7 @@ def _looks_like_calendar(text: str) -> bool:
 
 
 def _cal_date_from_text(text: str, today):
+    import re
     from datetime import timedelta
 
     t = text.lower()
@@ -797,7 +800,7 @@ def _cal_date_from_text(text: str, today):
         if word in t:
             return today + timedelta(days=off)
     for name, idx in _UA_WEEKDAYS.items():
-        if name in t:
+        if re.search(r"\b" + name, t):
             return today + timedelta(days=((idx - today.weekday()) % 7 or 7))
     return None
 
@@ -926,6 +929,33 @@ def _detect_incoming_intent(text: str) -> set:
     if any(v in t for v in _TASK_VERBS):
         flags.add("task")
     return flags
+
+
+def _reminder_due_from_text(text: str, now):
+    """When to remind, from a deadline in the text.
+
+    'до понеділка' / 'до пʼятниці' → the evening (18:00) before that day;
+    'до кінця тижня' → Thu evening; no deadline → tomorrow 09:00. Never in
+    the past — a same-day/tomorrow deadline reminds this evening or soon."""
+    from datetime import datetime, timedelta
+
+    today = now.date()
+    d = _cal_date_from_text(text, today)  # сьогодні/завтра/weekday/…
+    tl = text.lower()
+    if d is None and "кінц" in tl and "тижн" in tl:
+        d = today + timedelta(days=(4 - today.weekday()) % 7)  # Friday
+    if d is None:
+        return (now + timedelta(days=1)).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+    remind_day = d - timedelta(days=1)  # the evening before the deadline
+    if remind_day <= today:
+        if now.hour < 18:
+            return now.replace(hour=18, minute=0, second=0, microsecond=0)
+        return now + timedelta(hours=2)
+    return datetime(
+        remind_day.year, remind_day.month, remind_day.day, 18, 0, tzinfo=now.tzinfo
+    )
 
 
 def _cal_email_from_text(text: str):
