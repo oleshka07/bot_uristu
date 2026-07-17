@@ -257,22 +257,10 @@ def handle_incoming(
         return None, contact, is_new, "closer"
 
     # Auto-reply paused for this person: keep the log/context, but don't spend
-    # an AI call drafting. Hold a text-less draft so the user can compose on
-    # demand (the ✍️ button), and let the caller send a quiet heads-up.
+    # an AI call drafting. The caller decides whether to surface anything —
+    # it only pings when the message is actionable (a meeting or a task).
     if contact.auto_reply_paused:
-        held = TelegramDraft(
-            contact_id=contact.id,
-            chat_id=chat_id,
-            business_connection_id=business_connection_id,
-            kind=DraftKind.reply,
-            incoming_text=text,
-            draft_text="",
-            status=DraftStatus.pending,
-        )
-        db.add(held)
-        db.commit()
-        db.refresh(held)
-        return held, contact, is_new, "paused"
+        return None, contact, is_new, "paused"
 
     draft_text = ai.draft_reply(contact, text) or ""
     if draft_text.strip() == "[SKIP]":
@@ -292,6 +280,27 @@ def handle_incoming(
     db.commit()
     db.refresh(draft)
     return draft, contact, is_new, "drafted"
+
+
+def create_held_reply_draft(
+    db: Session, contact: Contact, *, chat_id: int, text: str,
+    business_connection_id: str | None,
+) -> TelegramDraft:
+    """A text-less reply draft for a paused contact — created only when the
+    caller surfaces an actionable heads-up, so the ✍️ button can compose later."""
+    d = TelegramDraft(
+        contact_id=contact.id,
+        chat_id=chat_id,
+        business_connection_id=business_connection_id,
+        kind=DraftKind.reply,
+        incoming_text=text,
+        draft_text="",
+        status=DraftStatus.pending,
+    )
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    return d
 
 
 def get_draft(db: Session, draft_id: int) -> TelegramDraft | None:

@@ -365,17 +365,22 @@ def handle_business_message(client, msg: dict) -> None:
             business_connection_id=bc_id,
         )
         if status == "paused":
-            # Logged for context, but no auto-draft — quiet heads-up only.
-            # Still detect a meeting / task and offer one-tap actions.
-            if admin and draft is not None:
-                flags = _detect_incoming_intent(draft.incoming_text or "")
+            # Logged for context. Only ping when there's actually something to
+            # act on (a meeting to schedule or a task to remember) — plain
+            # chit-chat from a paused contact stays silent.
+            flags = _detect_incoming_intent(text)
+            if admin and flags:
+                held = service.create_held_reply_draft(
+                    db, contact, chat_id=chat_id, text=text,
+                    business_connection_id=bc_id,
+                )
                 sent = client.send_message(
                     admin,
-                    _paused_notice(contact, draft.incoming_text),
-                    reply_markup=_paused_keyboard(draft.id, flags),
+                    _paused_notice(contact, text),
+                    reply_markup=_paused_keyboard(held.id, flags),
                 )
                 if sent:
-                    service.set_admin_message(db, draft, sent.get("message_id", 0))
+                    service.set_admin_message(db, held, sent.get("message_id", 0))
             return
         if draft is None:
             return  # conversation-ender: logged, no reply needed

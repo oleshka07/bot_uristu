@@ -49,6 +49,38 @@ def test_paused_contact_headsup_not_draft(client, monkeypatch):
         assert held is not None and held.draft_text == ""
 
 
+def test_paused_chitchat_is_silent(client, monkeypatch):
+    _admin(monkeypatch)
+    from app.core.database import SessionLocal
+    from app.modules.contacts.models import Contact, Frequency
+
+    with SessionLocal() as db:
+        db.add(
+            Contact(
+                first_name="Андрій",
+                telegram_chat_id=555002,
+                contact_frequency=Frequency.monthly,
+                auto_reply_paused=True,
+            )
+        )
+        db.commit()
+
+    fake = FakeClient()
+    dispatch(fake, _business_update(chat_id=555002, text="Ахахахха", msg_id=9))
+
+    # Nothing surfaced for non-actionable chatter…
+    assert fake.sent == []
+
+    from sqlalchemy import func, select
+    from app.modules.interactions.models import Interaction
+    from app.modules.telegram_bot.models import TelegramDraft
+
+    with SessionLocal() as db:
+        # …but it was still logged, and no held draft was created.
+        assert db.scalar(select(func.count(Interaction.id))) >= 1
+        assert db.scalar(select(func.count(TelegramDraft.id))) == 0
+
+
 def test_pause_and_resume_commands(client, monkeypatch):
     _admin(monkeypatch)
     from app.core.database import SessionLocal
