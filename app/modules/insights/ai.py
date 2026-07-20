@@ -842,3 +842,30 @@ def reflect_on_relationships(items: list[dict]) -> list[dict] | None:
     if isinstance(data, dict) and isinstance(data.get("reflections"), list):
         return data["reflections"]
     return None
+
+
+def analyze_time_report(markdown: str, goals: list[str]) -> str | None:
+    """Turn a raw weekly time report into focused, goal-aware insights.
+
+    ``goals`` are the user's active networking/project goal titles, so the
+    analysis ties time spent to what actually matters. Returns HTML-safe
+    plain text (no markup) or None when AI is unavailable."""
+    if not llm.enabled() or not (markdown or "").strip():
+        return None
+    goals_block = (
+        "Активні цілі користувача:\n" + "\n".join(f"- {g}" for g in goals)
+        if goals
+        else "Активних цілей не задано."
+    )
+    system = (
+        "Ти — коуч з продуктивності. Нижче — тижневий звіт часу з ПК "
+        "(ActivityWatch, по проєктах/застосунках) і цілі користувача. "
+        "Дай стислий аналіз УКРАЇНСЬКОЮ, по суті, без води:\n"
+        "1) Куди реально пішов час (топ-напрями, приблизні частки).\n"
+        "2) Що працює НА цілі, а що — відволікання/не в фокусі.\n"
+        "3) 2–3 конкретні поради, що прибрати або зменшити наступного тижня.\n"
+        "Пиши звичайним текстом без Markdown і без емодзі-заголовків; "
+        "короткі абзаци або марковані пункти через «•»."
+    )
+    user = f"{goals_block}\n\nЗВІТ:\n{markdown[:8000]}"
+    return _clean(llm.text(system, user, max_tokens=900, thinking=True))

@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "style_profile",
     "tags",
     "telegram_drafts",
+    "time_report_requests",
 }
 
 EXPECTED_ROUTES = {
@@ -73,6 +74,8 @@ EXPECTED_ROUTES = {
     ("POST", "/api/life-events/{event_id}/message"),
     ("POST", "/api/maintenance/refresh-warmth"),
     ("POST", "/api/maintenance/run-daily"),
+    ("GET", "/api/timereport/poll"),
+    ("POST", "/api/timereport/deliver"),
 }
 
 

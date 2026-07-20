@@ -671,9 +671,11 @@ def handle_admin_message(client, msg: dict) -> None:
         _handle_voice_intake(client, admin, transcript)
         return
 
-    # Plain text: first try to interpret it as an assistant command
-    # (reminder / note / cadence / importance); otherwise search the network.
+    # Plain text: time-tracking request → assistant command → network search.
     if text.strip():
+        if _looks_like_timereport(text):
+            _request_timereport(client, admin)
+            return
         if _handle_assistant_intent(client, admin, text.strip()):
             return
         _handle_network_search(client, admin, text.strip())
@@ -1101,6 +1103,31 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
     )
 
 
+def _request_timereport(client, admin: int) -> None:
+    from app.modules.timereport import service as tr
+
+    with SessionLocal() as db:
+        tr.request_report(db, "week")
+    client.send_message(
+        admin,
+        "🔄 Запросив трекінг часу з ПК. Якщо комп'ютер увімкнений — звіт із "
+        "AI-аналізом (куди йшов час і що не в фокусі цілей) прийде за 1–5 хв.\n"
+        "Якщо ПК вимкнений — прийде, щойно його увімкнеш.",
+    )
+
+
+def _looks_like_timereport(text: str) -> bool:
+    t = text.lower()
+    if "трекінг" in t or "трекинг" in t:
+        return True
+    time_word = any(w in t for w in ("час", "часу", "продуктивн", "ефективн"))
+    ask_word = any(
+        w in t for w in ("статистик", "звіт", "куди", "скільки", "аналіз", "трек")
+    )
+    week_word = any(w in t for w in ("тижд", "тиждень", "тижня", "week"))
+    return time_word and (ask_word or week_word)
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
@@ -1407,6 +1434,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/pause &lt;ім'я&gt; — я відповідаю цьому сам (без чернеток)\n"
                 "/resume &lt;ім'я&gt; — повернути авто-відповіді\n"
                 "/paused — хто на паузі\n"
+                "/time — трекінг часу за тиждень (з ПК) + AI-аналіз\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши боту як асистенту:\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
@@ -1597,6 +1625,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("time", "track", "tracking", "chas"):
+            _request_timereport(client, admin)
         elif cmd in ("activity", "status"):
             from datetime import datetime, timedelta, timezone
             from sqlalchemy import select

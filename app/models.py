@@ -30,6 +30,10 @@ from app.modules.interactions.models import (  # noqa: F401
     Interaction,
 )
 from app.modules.search.models import ContactEmbedding  # noqa: F401
+from app.modules.timereport.models import (  # noqa: F401
+    TimeReportRequest,
+    TimeReportStatus,
+)
 from app.modules.telegram_bot.models import (  # noqa: F401
     BusinessConnection,
     DraftKind,
