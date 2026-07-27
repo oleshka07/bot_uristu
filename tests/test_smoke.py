@@ -76,6 +76,12 @@ EXPECTED_ROUTES = {
     ("POST", "/api/maintenance/run-daily"),
     ("GET", "/api/timereport/poll"),
     ("POST", "/api/timereport/deliver"),
+    ("GET", "/api/tasks"),
+    ("POST", "/api/tasks"),
+    ("GET", "/api/tasks/next"),
+    ("PATCH", "/api/tasks/{task_id}"),
+    ("DELETE", "/api/tasks/{task_id}"),
+    ("POST", "/api/tasks/sync"),
 }
 
 

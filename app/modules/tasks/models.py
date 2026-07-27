@@ -1,0 +1,54 @@
+"""Task model — deliberately few fields, Dividify-style.
+
+Order is computed (status → date → duration), never hand-dragged, so there are
+no priority numbers or sort columns to maintain.
+"""
+
+from __future__ import annotations
+
+import enum
+from datetime import date, datetime
+
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base, utcnow
+
+
+class TaskStatus(str, enum.Enum):
+    immediate = "immediate"      # робити прямо зараз — завжди перша
+    urgent = "urgent"            # не можна пропустити — злітає вгору в день дедлайну
+    current = "current"          # я вже над цим працюю
+    todo = "todo"
+    hold = "hold"                # чекає на когось — вниз списку
+    done = "done"
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Стабільний короткий ідентифікатор — ним focus.md на ПК зіставляє рядки.
+    uid: Mapped[str] = mapped_column(String(12), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    status: Mapped[TaskStatus] = mapped_column(
+        Enum(TaskStatus), default=TaskStatus.todo, index=True
+    )
+    project: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tags: Mapped[str | None] = mapped_column(String(300), nullable=True)  # через кому
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True
+    )
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

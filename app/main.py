@@ -24,6 +24,7 @@ from .modules.goals.router import router as goals_router
 from .modules.insights.router import router as insights_router
 from .modules.integrations.router import router as integrations_router
 from .modules.integrations.social.router import router as imports_router
+from .modules.tasks.router import router as tasks_router
 from .modules.timereport.router import router as timereport_router
 
 logging.basicConfig(level=logging.INFO)
@@ -79,6 +80,7 @@ app.include_router(integrations_router)
 app.include_router(goals_router)
 app.include_router(admin_router)
 app.include_router(timereport_router)
+app.include_router(tasks_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────
