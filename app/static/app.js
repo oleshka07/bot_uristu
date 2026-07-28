@@ -80,6 +80,7 @@ function setView(view) {
   document.querySelectorAll(".nav-item").forEach((b) =>
     b.classList.toggle("active", b.dataset.view === view));
   if (view === "dashboard") renderDashboard();
+  else if (view === "tasks") renderTasks();
   else if (view === "contacts") renderContacts();
   else if (view === "goals") renderGoals();
   else if (view === "integrations") renderIntegrations();
@@ -627,6 +628,110 @@ function confirmDelete(c) {
 
 /* ── Goals ───────────────────────────────────────────────── */
 const GOAL_STATUSES = ["active", "paused", "done", "dropped"];
+
+/* ── Tasks ─────────────────────────────────────────────────────────────── */
+const TASK_STATUS = {
+  immediate: "🔥 зараз", urgent: "⏰ дедлайн", current: "▶ в роботі",
+  todo: "○ у черзі", hold: "⏸ чекає", done: "✓ готово",
+};
+
+function taskMeta(t) {
+  const bits = [TASK_STATUS[t.status] || t.status];
+  if (t.project) bits.push("#" + t.project);
+  if (t.duration_min) bits.push(t.duration_min >= 60
+    ? (t.duration_min / 60).toFixed(1).replace(".0", "") + " год" : t.duration_min + " хв");
+  if (t.due_date) bits.push("до " + t.due_date);
+  if (t.tags) bits.push(t.tags.split(",").map((x) => "@" + x).join(" "));
+  return bits.join(" · ");
+}
+
+async function renderTasks() {
+  const main = $("#main");
+  main.innerHTML = `<div class="view-head"><h2>Tasks</h2>
+    <button class="btn primary" id="new-task">+ Нова задача</button></div>
+    <div class="empty"><span class="spinner"></span> Loading…</div>`;
+  $("#new-task").addEventListener("click", () => openTaskForm());
+  let tasks;
+  try { tasks = await api("/tasks"); } catch (e) { return showError(e); }
+
+  // Список уже впорядкований сервером: статус → дата → тривалість.
+  const now = tasks[0];
+  const hero = now ? `<div class="card mb" style="border-left:3px solid var(--accent, #5eead4)">
+      <div class="muted" style="font-size:11px;letter-spacing:.08em">ЗАРАЗ</div>
+      <h3 class="section-title" style="margin:4px 0">${esc(now.title)}</h3>
+      <div class="muted">${esc(taskMeta(now))}</div>
+      <div class="flex mt" style="gap:6px">
+        <button class="btn small" data-done="${now.id}">✓ Готово</button>
+        <button class="btn small" data-cur="${now.id}">▶ Взяв у роботу</button>
+      </div>
+    </div>` : "";
+
+  const rest = tasks.slice(1).map((t) => `
+    <div class="card mb">
+      <div class="flex between">
+        <div><strong>${esc(t.title)}</strong>
+          <div class="muted">${esc(taskMeta(t))}</div></div>
+        <div class="flex" style="gap:6px">
+          <button class="btn small" data-cur="${t.id}">▶</button>
+          <button class="btn small" data-done="${t.id}">✓</button>
+          <button class="btn small" data-edit="${t.id}">Edit</button>
+          <button class="btn small danger" data-del="${t.id}">✕</button>
+        </div>
+      </div>
+    </div>`).join("");
+
+  main.querySelector(".empty").outerHTML = tasks.length
+    ? hero + rest
+    : `<div class="empty">Задач немає. Додай першу — або вони приїдуть із focus.md на ПК.</div>`;
+
+  const patch = async (id, body) => {
+    try { await api(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }); renderTasks(); }
+    catch (e) { toast(e.message, true); }
+  };
+  main.querySelectorAll("[data-done]").forEach((b) =>
+    b.addEventListener("click", () => patch(b.dataset.done, { status: "done" })));
+  main.querySelectorAll("[data-cur]").forEach((b) =>
+    b.addEventListener("click", () => patch(b.dataset.cur, { status: "current" })));
+  main.querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => openTaskForm(tasks.find((t) => t.id === Number(b.dataset.edit)))));
+  main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Видалити задачу?")) return;
+    try { await api(`/tasks/${b.dataset.del}`, { method: "DELETE" }); renderTasks(); }
+    catch (e) { toast(e.message, true); }
+  }));
+}
+
+function openTaskForm(t = null) {
+  openModal(`
+    <h3>${t ? "Редагувати задачу" : "Нова задача"}</h3>
+    <form id="task-form">
+      <label>Назва<input name="title" required value="${esc(t?.title || "")}" /></label>
+      <label>Статус<select name="status">${Object.entries(TASK_STATUS).map(([k, v]) =>
+        `<option value="${k}"${t?.status === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+      <label>Проєкт<input name="project" value="${esc(t?.project || "")}" /></label>
+      <label>Скільки займе, хв<input name="duration_min" type="number" min="1"
+        value="${t?.duration_min || ""}" /></label>
+      <label>Дедлайн<input name="due_date" type="date" value="${t?.due_date || ""}" /></label>
+      <label>Теги (через кому)<input name="tags" value="${esc(t?.tags || "")}" /></label>
+      <div class="flex mt" style="gap:8px">
+        <button class="btn primary" type="submit">Зберегти</button>
+        <button class="btn" type="button" id="task-cancel">Скасувати</button>
+      </div>
+    </form>`);
+  $("#task-cancel").addEventListener("click", closeModal);
+  $("#task-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {};
+    for (const [k, v] of f.entries()) body[k] = v === "" ? null : v;
+    if (body.duration_min) body.duration_min = Number(body.duration_min);
+    try {
+      if (t) await api(`/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/tasks", { method: "POST", body: JSON.stringify(body) });
+      closeModal(); renderTasks();
+    } catch (err) { toast(err.message, true); }
+  });
+}
 
 async function renderGoals() {
   const main = $("#main");

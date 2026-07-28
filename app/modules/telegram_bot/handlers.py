@@ -25,6 +25,25 @@ def _esc(s: str | None) -> str:
     return html.escape(s or "")
 
 
+_TASK_STATUS = {
+    "immediate": "🔥 зараз", "urgent": "⏰ дедлайн", "current": "▶ в роботі",
+    "todo": "○ у черзі", "hold": "⏸ чекає", "done": "✓ готово",
+}
+
+
+def _task_meta(task) -> str:
+    """Рядок під назвою задачі: статус, проєкт, скільки займе, дедлайн."""
+    status = getattr(task.status, "value", task.status)
+    bits = [_TASK_STATUS.get(status, status)]
+    if task.project:
+        bits.append("#" + _esc(task.project))
+    if task.duration_min:
+        bits.append(f"{task.duration_min} хв")
+    if task.due_date:
+        bits.append("до " + task.due_date.isoformat())
+    return " · ".join(bits)
+
+
 # Reply-keyboard buttons the old Chater bot left stuck in the chat. Tapping
 # one used to open Chater's planner — now we clear the keyboard and help.
 _LEGACY_BUTTONS = {
@@ -394,6 +413,48 @@ def handle_business_message(client, msg: dict) -> None:
                 service.set_admin_message(db, draft, sent.get("message_id", 0))
 
 
+def _handle_task_callback(client, cb_id: str, data: str, admin: int | None) -> None:
+    """Кнопки під задачею: ✓ готово / ▶ взяв у роботу. Далі показує наступну."""
+    from app.modules.tasks import service as tasks_service
+    from app.modules.tasks.models import Task, TaskStatus
+
+    try:
+        _, action, task_id = data.split(":")
+        task_id = int(task_id)
+    except ValueError:
+        client.answer_callback(cb_id)
+        return
+
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        if task is None or task.deleted_at is not None:
+            client.answer_callback(cb_id, "Уже неактуально")
+            return
+        if action == "done":
+            task.status = TaskStatus.done
+            note = "✓ Готово"
+        else:
+            task.status = TaskStatus.current
+            note = "▶ В роботі"
+        db.commit()
+        client.answer_callback(cb_id, note)
+        if not admin:
+            return
+        nxt = tasks_service.next_task(db)
+        if nxt is None:
+            client.send_message(admin, f"{note}: {_esc(task.title)}\n\nБільше задач немає 🎉")
+            return
+        client.send_message(
+            admin,
+            f"{note}: {_esc(task.title)}\n\n🎯 <b>Далі</b>\n"
+            + _esc(nxt.title) + "\n" + _task_meta(nxt),
+            reply_markup={"inline_keyboard": [[
+                {"text": "✓ Готово", "callback_data": f"tk:done:{nxt.id}"},
+                {"text": "▶ Взяв у роботу", "callback_data": f"tk:cur:{nxt.id}"},
+            ]]},
+        )
+
+
 def handle_callback(client, cb: dict) -> None:
     data = cb.get("data") or ""
     cb_id = cb.get("id", "")
@@ -405,6 +466,10 @@ def handle_callback(client, cb: dict) -> None:
         if admin:
             with SessionLocal() as db:
                 _send_next_outreach_card(client, db, admin)
+        return
+
+    if data.startswith("tk:"):
+        _handle_task_callback(client, cb_id, data, admin)
         return
 
     if not data.startswith("d:"):
@@ -1417,6 +1482,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 admin,
                 "<b>Networking AI</b>\n"
                 "/queue — почати обхід (кому написати, з чернетками)\n"
+                "/next — що робити прямо зараз (одна задача + кнопки)\n"
+                "/tasks — усі задачі в порядку виконання\n"
                 "/goals — активні цілі та причетні люди\n"
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
@@ -1504,6 +1571,32 @@ def _handle_command(client, admin: int, text: str) -> None:
             lines = ["🎯 <b>Активні цілі</b>"]
             for g in goals:
                 lines.append(f"• {_esc(g.title)} — {len(g.contacts)} контакт(ів)")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("next", "task"):
+            from app.modules.tasks import service as tasks_service
+
+            task = tasks_service.next_task(db)
+            if task is None:
+                client.send_message(admin, "Задач немає — усе закрито 🎉")
+                return
+            client.send_message(
+                admin,
+                "🎯 <b>Зараз</b>\n\n" + _esc(task.title) + "\n" + _task_meta(task),
+                reply_markup={"inline_keyboard": [[
+                    {"text": "✓ Готово", "callback_data": f"tk:done:{task.id}"},
+                    {"text": "▶ Взяв у роботу", "callback_data": f"tk:cur:{task.id}"},
+                ]]},
+            )
+        elif cmd == "tasks":
+            from app.modules.tasks import service as tasks_service
+
+            tasks = tasks_service.list_tasks(db)
+            if not tasks:
+                client.send_message(admin, "Задач немає — усе закрито 🎉")
+                return
+            lines = ["📋 <b>Задачі</b> — у порядку виконання"]
+            for t in tasks[:15]:
+                lines.append(f"• {_esc(t.title)} — {_task_meta(t)}")
             client.send_message(admin, "\n".join(lines))
         elif cmd == "overdue":
             _handle_command(client, admin, "/due")
