@@ -60,6 +60,7 @@ class TaskSyncIn(BaseModel):
     due_date: date | None = None
     duration_min: int | None = None
     tags: str | None = None
+    parent_uid: str | None = None   # підзадача: uid батьківської
 
 
 class SyncRequest(BaseModel):

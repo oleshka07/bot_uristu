@@ -58,6 +58,23 @@ def send_message(
     return bool(data and data.get("ok"))
 
 
+def send_and_get_id(text: str, chat_id: str | None = None) -> tuple[str, int] | None:
+    """Як send_message, але повертає (chat_id, message_id) — щоб потім видалити."""
+    chat = chat_id or settings.telegram_chat_id
+    if not (settings.telegram_bot_token and chat):
+        return None
+    data = _call("sendMessage", chat_id=chat, text=text, parse_mode="HTML",
+                 disable_web_page_preview=True)
+    if not (data and data.get("ok")):
+        return None
+    return str(chat), int(data["result"]["message_id"])
+
+
+def delete_message(chat_id: str, message_id: int) -> bool:
+    data = _call("deleteMessage", chat_id=chat_id, message_id=message_id)
+    return bool(data and data.get("ok"))
+
+
 # ── Digest text (Telegram-friendly, HTML) ────────────────────────────────────
 
 

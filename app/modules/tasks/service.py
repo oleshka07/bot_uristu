@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import secrets
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Task, TaskStatus
+from .models import Task, TaskNudge, TaskStatus
 from .schemas import SyncRequest, TaskIn, TaskUpdate
 
 # Вага статусу. Immediate завжди перша; hold — вниз; решта нарівні,
@@ -76,6 +77,54 @@ def soft_delete(db: Session, task: Task) -> None:
     db.commit()
 
 
+def nudge_text(db: Session) -> str | None:
+    """Що зараз у роботі і що далі — коротко, для Telegram."""
+    active = db.scalar(
+        select(Task).where(Task.deleted_at.is_(None), Task.status == TaskStatus.current)
+    )
+    queue = [t for t in list_tasks(db) if t.status != TaskStatus.current]
+    if not active and not queue:
+        return None
+
+    lines = []
+    if active:
+        lines.append(f"🎯 <b>Зараз:</b> {html.escape(active.title)}")
+    else:
+        lines.append("⚠️ <b>Задачу не взято.</b>")
+    if queue:
+        lines.append("")
+        lines.append("<b>Далі:</b>")
+        lines += [f"• {html.escape(t.title)}" for t in queue[:3]]
+    return "\n".join(lines)
+
+
+def send_nudge(db: Session) -> bool:
+    """Надсилає нагадування в Telegram, прибравши попереднє.
+
+    У чаті завжди рівно одне актуальне повідомлення — старі не накопичуються.
+    """
+    from app.modules.automation import telegram
+
+    text = nudge_text(db)
+    if not text:
+        return False
+
+    row = db.get(TaskNudge, 1)
+    if row and row.chat_id and row.message_id:
+        telegram.delete_message(row.chat_id, row.message_id)
+
+    sent = telegram.send_and_get_id(text)
+    if not sent:
+        return False
+    chat_id, message_id = sent
+    if row is None:
+        row = TaskNudge(id=1)
+        db.add(row)
+    row.chat_id, row.message_id = chat_id, message_id
+    db.commit()
+    return True
+
+
 def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
     """Злиття з ПК. Перемагає той, хто редагував пізніше (одинокий користувач).
 
@@ -88,6 +137,7 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
 
     applied = 0
     seen: set[str] = set()
+    parent_of: dict[str, str] = {}   # uid задачі → uid її батька
 
     for incoming in payload.tasks:
         task = get_by_uid(db, incoming.uid) if incoming.uid else None
@@ -114,6 +164,14 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
             task.duration_min = incoming.duration_min
         task.deleted_at = None
         seen.add(task.uid)
+        parent_of[task.uid] = incoming.parent_uid
+
+    # Другим проходом — бо батько міг бути створений у цьому ж запиті.
+    db.flush()
+    for uid, parent_uid in parent_of.items():
+        task = get_by_uid(db, uid)
+        parent = get_by_uid(db, parent_uid) if parent_uid else None
+        task.parent_id = parent.id if parent and parent.id != task.id else None
 
     deleted = 0
     if payload.authoritative:

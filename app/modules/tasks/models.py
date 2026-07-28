@@ -52,3 +52,20 @@ class Task(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class TaskNudge(Base):
+    """Останнє нагадування в Telegram — рівно один рядок.
+
+    Тримаємо id, щоб нове нагадування прибирало попереднє: у чаті завжди
+    одне актуальне повідомлення, а не стрічка застарілих.
+    """
+
+    __tablename__ = "task_nudges"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

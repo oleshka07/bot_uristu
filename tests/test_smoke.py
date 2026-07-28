@@ -82,6 +82,7 @@ EXPECTED_ROUTES = {
     ("PATCH", "/api/tasks/{task_id}"),
     ("DELETE", "/api/tasks/{task_id}"),
     ("POST", "/api/tasks/sync"),
+    ("POST", "/api/tasks/nudge"),
 }
 
 

@@ -51,6 +51,12 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     service.soft_delete(db, _task_or_404(db, task_id))
 
 
+@router.post("/nudge")
+def nudge(db: Session = Depends(get_db)):
+    """Нагадування в Telegram (кличе агент, коли мене немає за компʼютером)."""
+    return {"sent": service.send_nudge(db)}
+
+
 @router.post("/sync", response_model=SyncResponse)
 def sync(payload: SyncRequest, db: Session = Depends(get_db)):
     """Агент з ПК шле свій стан → отримує повний список сервера."""
