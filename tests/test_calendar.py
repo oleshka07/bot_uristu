@@ -246,6 +246,76 @@ def test_bare_time_helpers():
     ) == "футбол на кемпі"
 
 
+def test_relative_delta_helpers():
+    from datetime import timedelta
+
+    from app.modules.telegram_bot.handlers import (
+        _relative_delta_from_text, _human_delta,
+    )
+
+    assert _relative_delta_from_text("через 1 годину") == timedelta(hours=1)
+    assert _relative_delta_from_text("через годину") == timedelta(hours=1)
+    assert _relative_delta_from_text("через 30 хвилин") == timedelta(minutes=30)
+    assert _relative_delta_from_text("через півгодини") == timedelta(minutes=30)
+    assert _relative_delta_from_text("завтра о 15") is None
+    assert _human_delta(timedelta(hours=1)) == "1 год"
+    assert _human_delta(timedelta(minutes=90)) == "1 год 30 хв"
+
+
+def test_relative_time_creates_event_as_utc_instant(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    monkeypatch.setattr(
+        "app.integrations.google.status", lambda db: {"connected": True}
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "app.integrations.google.create_event",
+        lambda db, **kw: captured.update(kw) or {"summary": kw["summary"],
+                                                 "start": kw["start_local"],
+                                                 "html_link": "x", "meet_link": None},
+    )
+    fake = FakeClient()
+    dispatch(fake, _msg("додай в календар зустріч через 1 годину"))
+    assert "Подію створено" in fake.sent[-1]["text"]
+    # relative → absolute UTC-offset timestamp (not naive), end = +1h.
+    assert captured["start_local"].endswith("+00:00")
+    assert captured["end_local"].endswith("+00:00")
+
+
+def test_voice_calendar_routes_to_calendar_not_intake(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.settings.telegram_chat_id", "42", raising=False
+    )
+    _none_intent(monkeypatch)
+    monkeypatch.setattr(
+        "app.integrations.google.status", lambda db: {"connected": True}
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "app.integrations.google.create_event",
+        lambda db, **kw: captured.update(kw) or {"summary": kw["summary"],
+                                                 "start": kw["start_local"],
+                                                 "html_link": "x", "meet_link": None},
+    )
+    monkeypatch.setattr(
+        "app.modules.telegram_bot.handlers.transcribe_ogg",
+        lambda audio: "додай в календар зустріч через 1 годину",
+    )
+    fake = FakeClient()
+    monkeypatch.setattr(fake, "download_file", lambda fid: b"audio-bytes")
+    dispatch(
+        fake,
+        {"update_id": 1, "message": {"chat": {"id": 42},
+         "voice": {"file_id": "f1"}}},
+    )
+    # Went to the calendar handler, not the "не зміг розібрати, про кого" intake.
+    assert "Подію створено" in fake.sent[-1]["text"]
+    assert captured  # create_event was called
+
+
 def test_format_reminder_shows_range():
     from app.modules.automation.briefs import format_reminder
 

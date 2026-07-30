@@ -733,6 +733,15 @@ def handle_admin_message(client, msg: dict) -> None:
                 "GEMINI_API_KEY).",
             )
             return
+        # Route voice like text: time report / assistant command (calendar,
+        # reminder, note, cadence, importance) first — only then contact
+        # intake ("познайомився з ..."). Fixes voice calendar requests going
+        # to intake and failing with "не зміг розібрати, про кого це".
+        if _looks_like_timereport(transcript):
+            _request_timereport(client, admin)
+            return
+        if _handle_assistant_intent(client, admin, transcript):
+            return
         _handle_voice_intake(client, admin, transcript)
         return
 
@@ -932,6 +941,11 @@ def _cal_title_from_text(text: str) -> str:
     t = re.sub(r"через\s+google\s*meet", " ", t, flags=re.I)
     t = re.sub(r"\b(google\s*meet|онлайн|гугл\s*міт)\b", " ", t, flags=re.I)
     t = re.sub(
+        r"через\s+(?:\d+\s*)?(?:годин\w*|год|хвилин\w*|хв)|через\s+півгодини",
+        " ", t, flags=re.I,
+    )
+    t = re.sub(r"\bнов\w+\b", " ", t, flags=re.I)
+    t = re.sub(
         r"(?:з|від)\s*\d{1,2}(?:[:.]\d{2})?\s*(?:до|по|-|–|—)\s*\d{1,2}(?:[:.]\d{2})?",
         " ", t, flags=re.I,
     )
@@ -1037,18 +1051,39 @@ def _cal_email_from_text(text: str):
     return m.group(0) if m else None
 
 
-# A calendar event we've started but are waiting on the time for, per admin.
-# Process-lifetime, single-user — a restart just forgets a half-finished ask.
-_pending_event: dict[int, dict] = {}
-_PENDING_TTL = 900  # seconds
+def _relative_delta_from_text(text: str):
+    """A relative offset like 'через 1 годину' / 'через 30 хвилин' / 'через
+    півгодини' → a timedelta (from now). None if not present."""
+    import re
+    from datetime import timedelta
+
+    t = text.lower()
+    if "півгодин" in t:
+        return timedelta(minutes=30)
+    m = re.search(r"через\s+(\d+)?\s*(годин\w*|год|hour|хвилин\w*|хв|min)", t)
+    if not m:
+        return None
+    num = int(m.group(1)) if m.group(1) else 1
+    if m.group(2).startswith(("годин", "год", "hour")):
+        return timedelta(hours=num)
+    return timedelta(minutes=num)
 
 
-def _create_calendar_event(
-    client, admin, *, d, hm, endhm, title, email, meet, person
-) -> bool:
+def _human_delta(td) -> str:
+    mins = int(td.total_seconds() // 60)
+    h, m = divmod(mins, 60)
+    parts = []
+    if h:
+        parts.append(f"{h} год")
+    if m:
+        parts.append(f"{m} хв")
+    return " ".join(parts) or "0 хв"
+
+
+def _build_local_window(d, hm, endhm):
+    """(start_local, end_local, when_label) from a date + start/optional-end
+    time, as naive wall-clock strings interpreted in the calendar's timezone."""
     from datetime import datetime, timedelta
-
-    from app.integrations import google
 
     sh, sm = hm
     start_dt = datetime(d.year, d.month, d.day, sh, sm)
@@ -1057,6 +1092,22 @@ def _create_calendar_event(
         end_dt = start_dt + timedelta(hours=1)
     start_local = start_dt.strftime("%Y-%m-%dT%H:%M:00")
     end_local = end_dt.strftime("%Y-%m-%dT%H:%M:00")
+    when = f"{d.isoformat()} о {sh:02d}:{sm:02d}" + (
+        f"–{end_dt.strftime('%H:%M')}" if endhm else ""
+    )
+    return start_local, end_local, when
+
+
+# A calendar event we've started but are waiting on the time for, per admin.
+# Process-lifetime, single-user — a restart just forgets a half-finished ask.
+_pending_event: dict[int, dict] = {}
+_PENDING_TTL = 900  # seconds
+
+
+def _create_calendar_event(
+    client, admin, *, summary, start_local, end_local, email, meet, person, when_label
+) -> bool:
+    from app.integrations import google
 
     with SessionLocal() as db:
         if not email and person:
@@ -1072,7 +1123,7 @@ def _create_calendar_event(
             return True
         result = google.create_event(
             db,
-            summary=title,
+            summary=summary,
             start_local=start_local,
             end_local=end_local,
             attendee_email=email or None,
@@ -1087,10 +1138,7 @@ def _create_calendar_event(
         )
         return True
 
-    when = f"{d.isoformat()} о {sh:02d}:{sm:02d}"
-    if endhm:
-        when += f"–{end_dt.strftime('%H:%M')}"
-    lines = [f"✅ Подію створено: <b>{_esc(title)}</b>", f"🗓 {when}"]
+    lines = [f"✅ Подію створено: <b>{_esc(summary)}</b>", f"🗓 {when_label}"]
     if email:
         lines.append(f"👤 Гість: {_esc(email)}")
     if result.get("meet_link"):
@@ -1107,11 +1155,13 @@ def _complete_pending_event(client, admin, hm) -> bool:
     p = _pending_event.pop(admin, None)
     if not p:
         return False
+    start_local, end_local, when = _build_local_window(
+        _date.fromisoformat(p["date"]), hm, p.get("endhm")
+    )
     return _create_calendar_event(
-        client, admin,
-        d=_date.fromisoformat(p["date"]), hm=hm, endhm=p.get("endhm"),
-        title=p["title"], email=p.get("email"), meet=p.get("meet", False),
-        person=p.get("person", ""),
+        client, admin, summary=p["title"], start_local=start_local,
+        end_local=end_local, email=p.get("email"), meet=p.get("meet", False),
+        person=p.get("person", ""), when_label=when,
     )
 
 
@@ -1121,7 +1171,33 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
     remembers the half-built event and asks for it. Always returns True — a
     calendar request never falls through to network search."""
     import time as _time
-    from datetime import date as _date, datetime, timezone
+    from datetime import date as _date, datetime, timedelta, timezone
+
+    title = (
+        (intent.get("title") or "").strip()
+        or _cal_title_from_text(text)
+        or ("Зустріч" if "зустріч" in text.lower() else "Подія")
+    )
+    email = (intent.get("attendee_email") or "").strip() or _cal_email_from_text(text)
+    meet = bool(intent.get("google_meet")) or any(
+        w in text.lower() for w in ("google meet", "meet", "онлайн", "гугл міт")
+    )
+    person = (intent.get("person") or "").strip()
+
+    # Relative time ("через 1 годину") → an absolute instant from now. Sent as
+    # a UTC-offset timestamp so the calendar stores the right moment regardless
+    # of its own timezone.
+    rel = _relative_delta_from_text(text)
+    if rel is not None:
+        now = datetime.now(timezone.utc)
+        start_dt, end_dt = now + rel, now + rel + timedelta(hours=1)
+        return _create_calendar_event(
+            client, admin, summary=title,
+            start_local=start_dt.strftime("%Y-%m-%dT%H:%M:00+00:00"),
+            end_local=end_dt.strftime("%Y-%m-%dT%H:%M:00+00:00"),
+            email=email, meet=meet, person=person,
+            when_label=f"через {_human_delta(rel)}",
+        )
 
     today = datetime.now(timezone.utc).date()
     ds = (intent.get("due_date") or "").strip()[:10]
@@ -1139,16 +1215,6 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
         or (rng[0] if rng else None)
     )
     endhm = _cal_hm(intent.get("end_time")) or (rng[1] if rng else None)
-    title = (
-        (intent.get("title") or "").strip()
-        or _cal_title_from_text(text)
-        or ("Зустріч" if "зустріч" in text.lower() else "Подія")
-    )
-    email = (intent.get("attendee_email") or "").strip() or _cal_email_from_text(text)
-    meet = bool(intent.get("google_meet")) or any(
-        w in text.lower() for w in ("google meet", "meet", "онлайн", "гугл міт")
-    )
-    person = (intent.get("person") or "").strip()
 
     if hm is None:
         _pending_event[admin] = {
@@ -1162,9 +1228,11 @@ def _handle_calendar_event(client, admin: int, intent: dict, text: str) -> bool:
         )
         return True
 
+    start_local, end_local, when = _build_local_window(d, hm, endhm)
     return _create_calendar_event(
-        client, admin, d=d, hm=hm, endhm=endhm, title=title,
-        email=email, meet=meet, person=person,
+        client, admin, summary=title, start_local=start_local,
+        end_local=end_local, email=email, meet=meet, person=person,
+        when_label=when,
     )
 
 

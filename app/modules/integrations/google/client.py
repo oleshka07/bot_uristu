@@ -489,10 +489,24 @@ def create_event(
 
         calendar = build("calendar", "v3", credentials=creds, cache_discovery=False)
         tz = _primary_timezone(calendar)
+
+        def _dt(value: str) -> dict:
+            # If the value already carries a UTC offset (…Z / …+02:00), keep it
+            # as an absolute instant; otherwise treat it as wall-clock in the
+            # calendar's timezone.
+            import re as _re
+
+            has_offset = value.endswith("Z") or bool(
+                _re.search(r"[+-]\d\d:\d\d$", value)
+            )
+            return {"dateTime": value} if has_offset else {
+                "dateTime": value, "timeZone": tz,
+            }
+
         body: dict = {
             "summary": summary,
-            "start": {"dateTime": start_local, "timeZone": tz},
-            "end": {"dateTime": end_local, "timeZone": tz},
+            "start": _dt(start_local),
+            "end": _dt(end_local),
         }
         if attendee_email:
             body["attendees"] = [{"email": attendee_email}]
