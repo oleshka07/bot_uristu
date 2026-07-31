@@ -21,6 +21,18 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "source": "VARCHAR(40) DEFAULT 'manual'",
         "external_id": "VARCHAR(200)",
     },
+    # Ієрархія проєкт → ціль → задача: таблиці tasks і goals уже існують на
+    # проді, тож нові колонки треба додати явно — create_all цього не робить.
+    "tasks": {
+        "kind": "VARCHAR(20) DEFAULT 'task'",
+        "project_id": "INTEGER",
+        "item_type": "VARCHAR(40)",
+        "counterpart": "VARCHAR(120)",
+        "recur": "VARCHAR(20)",
+    },
+    "goals": {
+        "project_id": "INTEGER",
+    },
     "contacts": {
         "external_ref": "VARCHAR(120)",
         "telegram_chat_id": "BIGINT",

@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Task, TaskNudge, TaskStatus
+from .models import Task, TaskKind, TaskNudge, TaskStatus
 from .schemas import SyncRequest, TaskIn, TaskUpdate
 
 # Вага статусу. Immediate завжди перша; hold — вниз; решта нарівні,
@@ -39,10 +39,24 @@ def order_key(t: Task, today: date | None = None):
     return (rank, days, t.duration_min or _FAR, t.id)
 
 
-def list_tasks(db: Session, *, include_done: bool = False) -> list[Task]:
+def set_project(db: Session, task: Task, name: str | None) -> None:
+    """Назва проєкту → рядок у projects. Єдине місце, де ставляться обидва поля."""
+    from app.modules.projects import service as projects
+
+    project = projects.ensure(db, name)
+    task.project = project.name if project else None
+    task.project_id = project.id if project else None
+
+
+def list_tasks(db: Session, *, include_done: bool = False,
+               kind: TaskKind | None = TaskKind.task) -> list[Task]:
+    """За замовчуванням — лише звичайні задачі: обовʼязки й очікування
+    живуть окремими списками і в загальну чергу не потрапляють."""
     stmt = select(Task).where(Task.deleted_at.is_(None))
     if not include_done:
         stmt = stmt.where(Task.status != TaskStatus.done)
+    if kind is not None:
+        stmt = stmt.where(Task.kind == kind)
     return sorted(db.scalars(stmt).unique(), key=order_key)
 
 
@@ -57,15 +71,21 @@ def get_by_uid(db: Session, uid: str) -> Task | None:
 
 
 def create_task(db: Session, payload: TaskIn) -> Task:
-    task = Task(uid=new_uid(), **payload.model_dump())
+    fields = payload.model_dump()
+    project_name = fields.pop("project", None)
+    task = Task(uid=new_uid(), **fields)
     db.add(task)
+    set_project(db, task, project_name)
     db.commit()
     db.refresh(task)
     return task
 
 
 def update_task(db: Session, task: Task, payload: TaskUpdate) -> Task:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    if "project" in fields:
+        set_project(db, task, fields.pop("project"))
+    for field, value in fields.items():
         setattr(task, field, value)
     db.commit()
     db.refresh(task)
@@ -155,9 +175,12 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
             applied += 1
         task.title = incoming.title
         task.status = incoming.status
+        task.kind = incoming.kind
         task.tags = incoming.tags
-        if incoming.project is not None:
-            task.project = incoming.project
+        task.item_type = incoming.item_type
+        task.counterpart = incoming.counterpart
+        task.recur = incoming.recur
+        set_project(db, task, incoming.project)
         if incoming.due_date is not None:
             task.due_date = incoming.due_date
         if incoming.duration_min is not None:
@@ -182,4 +205,6 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
                 deleted += 1
 
     db.commit()
-    return list_tasks(db, include_done=True), applied, deleted
+    # kind=None → віддаємо ВСЕ (задачі + обовʼязки + очікування): агент розкладе
+    # їх по своїх списках у focus.md.
+    return list_tasks(db, include_done=True, kind=None), applied, deleted

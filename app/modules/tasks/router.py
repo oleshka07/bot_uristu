@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 
 from . import service
-from .models import Task
+from .models import Task, TaskKind
 from .schemas import SyncRequest, SyncResponse, TaskIn, TaskOut, TaskUpdate
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -24,10 +24,14 @@ def _task_or_404(db: Session, task_id: int):
 @router.get("", response_model=list[TaskOut])
 def list_tasks(
     include_done: bool = Query(default=False),
+    kind: TaskKind | None = Query(default=TaskKind.task),
     db: Session = Depends(get_db),
 ):
-    """Впорядковано алгоритмом: статус → дата → тривалість."""
-    return service.list_tasks(db, include_done=include_done)
+    """Впорядковано алгоритмом: статус → дата → тривалість.
+
+    kind=task (за замовчуванням) · duty · expectation · порожньо = всі.
+    """
+    return service.list_tasks(db, include_done=include_done, kind=kind)
 
 
 @router.get("/next", response_model=TaskOut | None)

@@ -21,6 +21,7 @@ class GoalIn(BaseModel):
     status: GoalStatus = GoalStatus.active
     priority: int = Field(default=2, ge=1, le=3)
     target_date: date | None = None
+    project_id: int | None = None
 
 
 class GoalUpdate(BaseModel):
@@ -29,6 +30,7 @@ class GoalUpdate(BaseModel):
     status: GoalStatus | None = None
     priority: int | None = Field(default=None, ge=1, le=3)
     target_date: date | None = None
+    project_id: int | None = None
 
 
 class GoalOut(BaseModel):
@@ -39,6 +41,7 @@ class GoalOut(BaseModel):
     status: GoalStatus
     priority: int
     target_date: date | None
+    project_id: int | None
     created_at: datetime
     contacts: list[GoalContactRef] = Field(default_factory=list)
 

@@ -18,6 +18,7 @@ from app.modules.integrations import models as integrations_models  # noqa: F401
 from app.modules.integrations.social import models as social_models  # noqa: F401
 from app.modules.interactions import models as interactions_models  # noqa: F401
 from app.modules.goals import models as goals_models  # noqa: F401
+from app.modules.projects import models as projects_models  # noqa: F401
 from app.modules.search import models as search_models  # noqa: F401
 from app.modules.tasks import models as tasks_models  # noqa: F401
 from app.modules.telegram_bot import models as telegram_bot_models  # noqa: F401
@@ -35,4 +36,5 @@ __all__ = [
     "automation_models",
     "timereport_models",
     "tasks_models",
+    "projects_models",
 ]

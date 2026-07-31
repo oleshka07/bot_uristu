@@ -24,6 +24,12 @@ class TaskStatus(str, enum.Enum):
     done = "done"
 
 
+class TaskKind(str, enum.Enum):
+    task = "task"                # звичайна задача
+    duty = "duty"                # обовʼязок: я комусь винен
+    expectation = "expectation"  # очікування: я чекаю від когось
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -34,7 +40,18 @@ class Task(Base):
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus), default=TaskStatus.todo, index=True
     )
+    kind: Mapped[TaskKind] = mapped_column(
+        Enum(TaskKind), default=TaskKind.task, index=True
+    )
+    # `project` — назва (нею оперує focus.md), `project_id` — реальний звʼязок.
+    # Обидва встановлюються в одному місці (з назви), тому розійтися не можуть.
     project: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    item_type: Mapped[str | None] = mapped_column(String(40), nullable=True)   # файл/дзвінок…
+    counterpart: Mapped[str | None] = mapped_column(String(120), nullable=True)  # для/від кого
+    recur: Mapped[str | None] = mapped_column(String(20), nullable=True)       # monthly/weekly
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[str | None] = mapped_column(String(300), nullable=True)  # через кому

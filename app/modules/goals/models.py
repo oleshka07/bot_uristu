@@ -48,6 +48,9 @@ class Goal(Base):
     )
     priority: Mapped[int] = mapped_column(Integer, default=2)  # 1 low .. 3 high
     target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
