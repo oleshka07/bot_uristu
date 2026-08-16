@@ -454,7 +454,8 @@ _ASSISTANT_SCHEMA = {
         "action": {
             "type": "string",
             "enum": [
-                "remind", "note", "cadence", "importance", "calendar", "none",
+                "remind", "note", "cadence", "importance", "calendar",
+                "idea", "none",
             ],
         },
         "person": {"type": "string"},
@@ -517,14 +518,22 @@ def parse_assistant_intent(text: str, today: str) -> dict | None:
         "start_time («HH:MM» 24-год), end_time (якщо вказано діапазон, інакше "
         "\"\"), attendee_email (email гостя, якщо є), google_meet (true, якщо "
         "просять через Google Meet/онлайн). person — імʼя людини, якщо згадана.\n"
+        "• idea — користувач ділиться ІДЕЄЮ/думкою/задумом, щоб зберегти й "
+        "розвивати («є ідея...», «ідея:...», «думка:...», а також довгі "
+        "роздуми про продукт/проєкт/можливість). Це НЕ про конкретну людину, "
+        "яку він щойно зустрів. Нічого не заповнюй — весь текст збережеться "
+        "як є.\n"
         "• none — це НЕ команда: питання чи пошук по мережі («хто з моїх "
-        "у крипті?», «знайди Марію»). Став action=none.\n"
-        "Якщо не впевнений — став none. Порожні поля лишай порожніми рядками "
-        "(або 0 для importance). Respond with JSON only."
+        "у крипті?», «знайди Марію»), або нотатка про нового знайомого "
+        "(«познайомився з Андрієм...»). Став action=none.\n"
+        "Пріоритет, якщо сумнівно: зустріч (є час/дата) → calendar; прохання "
+        "нагадати → remind; роздум/задум → idea; інакше none.\n"
+        "Порожні поля лишай порожніми рядками (або 0 для importance). "
+        "Respond with JSON only."
     )
     data = llm.json(system, text.strip(), _ASSISTANT_SCHEMA, max_tokens=400)
     if isinstance(data, dict) and data.get("action") in {
-        "remind", "note", "cadence", "importance", "none",
+        "remind", "note", "cadence", "importance", "calendar", "idea", "none",
     }:
         return data
     return None

@@ -1261,6 +1261,71 @@ def _looks_like_timereport(text: str) -> bool:
     return time_word and (ask_word or week_word)
 
 
+def _looks_like_idea(text: str) -> bool:
+    """Keyword net for an idea dump — used only when the AI classifier didn't
+    already tag it. Anchored at the start so a mid-sentence 'ідея' in a search
+    query doesn't hijack it."""
+    import re
+
+    t = text.strip().lower()
+    if re.match(
+        r"(є\s+ідея|нова\s+ідея|ідея|думка|задум|brainstorm|брейншторм)\b", t
+    ):
+        return True
+    return any(
+        k in t for k in (
+            "запиши ідею", "збережи ідею", "нова ідея",
+            "продовж ідею", "продовжити ідею", "продовжуючи ідею",
+            "додай до ідеї", "доповни ідею", "розвин ідею", "розвинь ідею",
+            "до тієї ідеї", "до останньої ідеї",
+        )
+    )
+
+
+def _is_idea_append(text: str) -> bool:
+    t = text.lower()
+    return any(
+        k in t for k in (
+            "продовж", "додай до ідеї", "доповни ідею", "розвин ідею",
+            "до тієї ідеї", "до останньої ідеї", "продовжуючи ідею",
+        )
+    )
+
+
+def _handle_idea(client, admin: int, text: str) -> bool:
+    """Capture a free-form idea, or grow the latest one ('продовж ідею …')."""
+    import re
+
+    from app.modules.ideas import service as ideas
+
+    text = (text or "").strip()
+    with SessionLocal() as db:
+        if _is_idea_append(text):
+            idea = ideas.latest_active(db)
+            if idea is not None:
+                extra = re.sub(
+                    r"^\s*(продовжуючи\s+ідею|продовж\w*\s+ідею|додай\s+до\s+"
+                    r"ідеї|доповни\s+ідею|розвин\w*\s+ідею|до\s+(?:тієї|"
+                    r"останньої)\s+ідеї)[\s:—-]*",
+                    "", text, flags=re.I,
+                )
+                ideas.append_to_idea(db, idea, extra or text)
+                client.send_message(
+                    admin,
+                    f"➕ Доповнив ідею «{_esc(idea.title)}» — тепер "
+                    f"{len(idea.body)} символів.\n/idea {idea.id} — відкрити.",
+                )
+                return True
+        idea = ideas.create_idea(db, text)
+        client.send_message(
+            admin,
+            f"💡 Записав ідею: «{_esc(idea.title)}» ({len(idea.body)} симв.).\n"
+            f"/ideas — список · /idea {idea.id} — повністю · «продовж ідею …» "
+            "— доповнити.",
+        )
+    return True
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
@@ -1283,12 +1348,16 @@ def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     today = f"{now.date().isoformat()}, {_WEEKDAYS_UK[now.weekday()]}"
     intent = _ai.parse_assistant_intent(text, today) or {}
     action = intent.get("action")
+    if action == "idea":
+        return _handle_idea(client, admin, text)
     if action not in ("remind", "note", "cadence", "importance"):
-        # Not a contact command. A calendar event may have no contact at all —
-        # route it here, with a keyword net so it works even when the AI
+        # Not a contact command. Calendar / idea may have no contact at all —
+        # route them here, with keyword nets so they still work when the AI
         # under-classifies or its JSON call failed.
         if action == "calendar" or _looks_like_calendar(text):
             return _handle_calendar_event(client, admin, intent, text)
+        if _looks_like_idea(text):
+            return _handle_idea(client, admin, text)
         return False
 
     person = (intent.get("person") or "").strip()
@@ -1570,13 +1639,15 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/resume &lt;ім'я&gt; — повернути авто-відповіді\n"
                 "/paused — хто на паузі\n"
                 "/time — трекінг часу за тиждень (з ПК) + AI-аналіз\n"
+                "/ideas — мої ідеї · /idea &lt;№&gt; — відкрити\n"
                 "/activity — що робив бот + стан системи\n\n"
-                "🤖 Пиши боту як асистенту:\n"
+                "🤖 Пиши або надиктовуй боту — він сам розбере намір:\n"
+                "• «є ідея зробити …» → збережу як ідею (можна довго й багато)\n"
+                "• «продовж ідею …» → доповню останню\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
                 "• «запиши до Марії, що вона переїхала в Берлін»\n"
-                "• «спілкуватися з Іваном раз на місяць»\n"
                 "• «додай зустріч на сьогодні о 14:00 з Сергієм»\n"
-                "• «зустріч завтра 11:00 через Google Meet, email …»\n\n"
+                "• «зустріч через годину через Google Meet»\n\n"
                 "💬 Або постав питання — пошук по мережі "
                 "(«хто з моїх шарить у крипті?»)\n"
                 "🎤 Голосове — запишу в базу («познайомився з Андрієм, "
@@ -1785,6 +1856,36 @@ def _handle_command(client, admin: int, text: str) -> None:
                 )
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("ideas", "idea"):
+            from app.modules.ideas import service as ideas
+
+            arg_s = arg.strip()
+            if arg_s.isdigit():
+                idea = ideas.get_idea(db, int(arg_s))
+                if idea is None:
+                    client.send_message(admin, "Немає такої ідеї.")
+                    return
+                header = f"💡 <b>{_esc(idea.title)}</b>\n\n"
+                body = _esc(idea.body)
+                first = True
+                for i in range(0, len(body), 3500):
+                    chunk = body[i : i + 3500]
+                    client.send_message(admin, (header + chunk) if first else chunk)
+                    first = False
+                return
+            items = ideas.list_ideas(db)
+            if not items:
+                client.send_message(
+                    admin,
+                    "Ідей поки немає. Просто напиши або надиктуй «є ідея …» — "
+                    "і я збережу. «Продовж ідею …» — доповнити останню.",
+                )
+                return
+            lines = ["💡 <b>Ідеї</b>"]
+            for i in items[:25]:
+                lines.append(f"• [{i.id}] {_esc(i.title)}")
+            lines.append("\n/idea &lt;номер&gt; — відкрити повністю.")
             client.send_message(admin, "\n".join(lines))
         elif cmd in ("time", "track", "tracking", "chas"):
             _request_timereport(client, admin)
