@@ -144,6 +144,10 @@ def _contact_link(contact) -> str:
 # Channels-message id → contact id, so a reply to it saves new channels.
 _channel_msgs: dict[int, int] = {}
 
+# Confirmation message id → resource id, so replying to "збережу на потім"
+# (text or voice) attaches the note to that exact link.
+_resource_msgs: dict[int, int] = {}
+
 
 def _channels_text(contact, draft_text: str) -> str:
     """All known channels for reaching this person elsewhere + the draft in
@@ -472,6 +476,31 @@ def handle_callback(client, cb: dict) -> None:
         _handle_task_callback(client, cb_id, data, admin)
         return
 
+    if data.startswith("r:"):
+        from app.modules.resources import service as res
+        from app.modules.resources.models import ResourceStatus
+
+        parts = data.split(":")
+        try:
+            action, rid = parts[1], int(parts[2])
+        except (IndexError, ValueError):
+            client.answer_callback(cb_id)
+            return
+        with SessionLocal() as db:
+            r = res.get_resource(db, rid)
+            if r is None:
+                client.answer_callback(cb_id, "Уже немає")
+                return
+            res.set_status(
+                db, r,
+                ResourceStatus.done if action == "d" else ResourceStatus.dropped,
+            )
+            left = res.open_count(db)
+        client.answer_callback(
+            cb_id, f"✅ Готово · лишилось {left}" if action == "d" else "🗑 Прибрав"
+        )
+        return
+
     if not data.startswith("d:"):
         client.answer_callback(cb_id)
         return
@@ -677,6 +706,11 @@ def handle_admin_message(client, msg: dict) -> None:
         if not instruction:
             return
         # Reply to a 📇 channels message → save new channels to the contact.
+        if reply_to in _resource_msgs:
+            _handle_resource_note(
+                client, admin, _resource_msgs[reply_to], instruction
+            )
+            return
         if reply_to in _channel_msgs:
             _handle_channel_reply(client, admin, _channel_msgs[reply_to], msg)
             return
@@ -747,6 +781,8 @@ def handle_admin_message(client, msg: dict) -> None:
 
     # Plain text: time-tracking request → assistant command → network search.
     if text.strip():
+        if _handle_link_capture(client, admin, text.strip()):
+            return
         if _looks_like_timereport(text):
             _request_timereport(client, admin)
             return
@@ -1261,6 +1297,114 @@ def _looks_like_timereport(text: str) -> bool:
     return time_word and (ask_word or week_word)
 
 
+_KIND_LABEL = {
+    "watch": "🎬 Подивитись",
+    "read": "📖 Прочитати",
+    "tool": "🛠 Спробувати",
+    "reference": "📎 Довідка",
+    "other": "🔖 Інше",
+}
+
+
+def _handle_link_capture(client, admin: int, text: str) -> bool:
+    """A message with a link → park it on the 'later' shelf instead of letting
+    it rot in a browser tab. The rest of the text becomes the note (why)."""
+    from app.modules.resources import service as res
+
+    urls = res.extract_urls(text)
+    if not urls:
+        return False
+    note = text
+    for u in urls:
+        note = note.replace(u, " ")
+    note = " ".join(note.split()).strip(" -—:·") or None
+
+    saved = []
+    with SessionLocal() as db:
+        for u in urls[:5]:
+            existing = res.find_by_url(db, u)
+            saved.append(existing or res.create_resource(db, url=u, note=note))
+        lines = ["🔖 <b>Відклав на потім</b>"]
+        for r in saved:
+            lines.append(
+                f"• [{r.id}] {_KIND_LABEL.get(r.kind.value, '')} "
+                f"— {_esc(r.title)}"
+            )
+        lines.append("\n/later — список · відповідь на це повідомлення "
+                     "(текстом чи голосом) додасть нотатку.")
+        sent = client.send_message(admin, "\n".join(lines))
+    if sent and saved:
+        _resource_msgs[sent.get("message_id", 0)] = saved[0].id
+        if len(_resource_msgs) > 200:
+            for k in list(_resource_msgs)[:100]:
+                _resource_msgs.pop(k, None)
+    return True
+
+
+def _handle_resource_note(client, admin: int, resource_id: int, note: str) -> None:
+    """Reply to a capture confirmation → attach/extend the note and re-guess
+    the kind from what the user just said."""
+    from app.modules.resources import service as res
+
+    with SessionLocal() as db:
+        r = res.get_resource(db, resource_id)
+        if r is None:
+            return
+        r.note = f"{r.note}\n{note}" if r.note else note
+        r.kind = res.guess_kind(r.url, note)
+        if r.title.startswith(("http", "www")) or " — " in r.title:
+            r.title = res.title_from(None, note) or r.title
+        db.commit()
+        db.refresh(r)
+        client.send_message(
+            admin,
+            f"📝 Записав: {_KIND_LABEL.get(r.kind.value, '')} — "
+            f"<b>{_esc(r.title)}</b>",
+        )
+
+
+def _later_keyboard(items) -> dict:
+    """One tap per row-of-numbers to close an item off."""
+    row, rows = [], []
+    for i, r in enumerate(items[:8], start=1):
+        row.append({"text": f"✅ {i}", "callback_data": f"r:d:{r.id}"})
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return {"inline_keyboard": rows} if rows else {}
+
+
+def _send_later_list(client, admin: int, db, kind=None) -> None:
+    from app.modules.resources import service as res
+
+    items = res.list_open(db, kind=kind)
+    if not items:
+        client.send_message(
+            admin,
+            "🔖 Список порожній. Кинь сюди посилання (можна з поясненням, "
+            "напр. «подивитись про воронки») — і воно чекатиме тут, а не у "
+            "вкладках.",
+        )
+        return
+    lines = [f"🔖 <b>На потім</b> — {len(items)}"]
+    for i, r in enumerate(items[:8], start=1):
+        age = res.age_days(r)
+        age_s = "сьогодні" if age == 0 else f"{age}д тому"
+        lines.append("")
+        lines.append(
+            f"<b>{i}.</b> {_KIND_LABEL.get(r.kind.value, '')} "
+            f"— {_esc(r.title)} <i>({age_s})</i>"
+        )
+        if r.url:
+            lines.append(_esc(r.url))
+    if len(items) > 8:
+        lines.append(f"\n…і ще {len(items) - 8}.")
+    lines.append("\n✅ — позначити переглянутим.")
+    client.send_message(admin, "\n".join(lines), reply_markup=_later_keyboard(items))
+
+
 def _looks_like_idea(text: str) -> bool:
     """Keyword net for an idea dump — used only when the AI classifier didn't
     already tag it. Anchored at the start so a mid-sentence 'ідея' in a search
@@ -1640,8 +1784,10 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/paused — хто на паузі\n"
                 "/time — трекінг часу за тиждень (з ПК) + AI-аналіз\n"
                 "/ideas — мої ідеї · /idea &lt;№&gt; — відкрити\n"
+                "/later — посилання «на потім» (кинь сюди лінк)\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши або надиктовуй боту — він сам розбере намір:\n"
+                "• кинь посилання (+ «подивитись про воронки») → у /later\n"
                 "• «є ідея зробити …» → збережу як ідею (можна довго й багато)\n"
                 "• «продовж ідею …» → доповню останню\n"
                 "• «нагадай написати Олегу через 3 тижні»\n"
@@ -1857,6 +2003,16 @@ def _handle_command(client, admin: int, text: str) -> None:
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("later", "read", "watch", "links"):
+            from app.modules.resources.models import ResourceKind
+
+            kind = None
+            a = arg.strip().lower()
+            if cmd == "watch" or a.startswith("вiдео") or a.startswith("відео"):
+                kind = ResourceKind.watch
+            elif cmd == "read" or a.startswith("читат"):
+                kind = ResourceKind.read
+            _send_later_list(client, admin, db, kind=kind)
         elif cmd in ("ideas", "idea"):
             from app.modules.ideas import service as ideas
 

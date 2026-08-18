@@ -20,6 +20,7 @@ from app.modules.interactions import models as interactions_models  # noqa: F401
 from app.modules.goals import models as goals_models  # noqa: F401
 from app.modules.ideas import models as ideas_models  # noqa: F401
 from app.modules.projects import models as projects_models  # noqa: F401
+from app.modules.resources import models as resources_models  # noqa: F401
 from app.modules.search import models as search_models  # noqa: F401
 from app.modules.tasks import models as tasks_models  # noqa: F401
 from app.modules.telegram_bot import models as telegram_bot_models  # noqa: F401
@@ -39,4 +40,5 @@ __all__ = [
     "tasks_models",
     "projects_models",
     "ideas_models",
+    "resources_models",
 ]

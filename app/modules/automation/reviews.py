@@ -90,6 +90,14 @@ def weekly_review_text(db) -> str:
         lines.append("\n🎯 <b>Цілі</b>")
         for g in goals[:5]:
             lines.append(f"• {_esc(g.title)} — {len(g.contacts)} причетних")
+    from app.modules.resources import service as _res
+
+    parked = _res.list_open(db)
+    if parked:
+        oldest = max(_res.age_days(r) for r in parked)
+        lines.append(
+            f"\n🔖 <b>На потім</b>: {len(parked)} (найстаріше — {oldest}д). /later"
+        )
     if data.suggestions:
         lines.append("\n<b>Почни тиждень із цих людей:</b>")
         for sg in data.suggestions[:5]:

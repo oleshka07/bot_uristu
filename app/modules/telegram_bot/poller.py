@@ -59,6 +59,7 @@ def run() -> None:
             {"command": "paused", "description": "Хто на паузі"},
             {"command": "time", "description": "Трекінг часу за тиждень (ПК)"},
             {"command": "ideas", "description": "Мої ідеї"},
+            {"command": "later", "description": "Посилання на потім"},
             {"command": "activity", "description": "Що робив бот + стан"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},

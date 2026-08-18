@@ -30,6 +30,11 @@ from app.modules.interactions.models import (  # noqa: F401
     Interaction,
 )
 from app.modules.search.models import ContactEmbedding  # noqa: F401
+from app.modules.resources.models import (  # noqa: F401
+    Resource,
+    ResourceKind,
+    ResourceStatus,
+)
 from app.modules.timereport.models import (  # noqa: F401
     TimeReportRequest,
     TimeReportStatus,

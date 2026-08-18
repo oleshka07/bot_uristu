@@ -26,6 +26,7 @@ EXPECTED_TABLES = {
     "telegram_drafts",
     "time_report_requests",
     "ideas",
+    "resources",
 }
 
 EXPECTED_ROUTES = {
@@ -94,6 +95,11 @@ EXPECTED_ROUTES = {
     ("POST", "/api/ideas/{idea_id}/append"),
     ("PATCH", "/api/ideas/{idea_id}"),
     ("DELETE", "/api/ideas/{idea_id}"),
+    ("GET", "/api/resources"),
+    ("POST", "/api/resources"),
+    ("GET", "/api/resources/stats"),
+    ("PATCH", "/api/resources/{resource_id}"),
+    ("DELETE", "/api/resources/{resource_id}"),
 }
 
 
