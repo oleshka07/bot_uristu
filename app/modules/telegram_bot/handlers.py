@@ -1785,6 +1785,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/time — трекінг часу за тиждень (з ПК) + AI-аналіз\n"
                 "/ideas — мої ідеї · /idea &lt;№&gt; — відкрити\n"
                 "/later — посилання «на потім» (кинь сюди лінк)\n"
+                "/stalled — проєкти без наступної дії\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши або надиктовуй боту — він сам розбере намір:\n"
                 "• кинь посилання (+ «подивитись про воронки») → у /later\n"
@@ -2002,6 +2003,29 @@ def _handle_command(client, admin: int, text: str) -> None:
                 )
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd in ("stalled", "stuck", "zastriali"):
+            from app.modules.projects import service as _proj
+
+            stalled = _proj.stalled_projects(db)
+            if not stalled:
+                client.send_message(
+                    admin,
+                    "✅ У кожного активного проєкту є наступна дія. Так тримати.",
+                )
+                return
+            lines = ["⚠️ <b>Проєкти без наступної дії</b>"]
+            for prj, reason in stalled[:15]:
+                why = (
+                    "усе чекає на когось"
+                    if reason == "waiting"
+                    else "жодної відкритої задачі"
+                )
+                lines.append(f"• <b>{_esc(prj.name)}</b> — <i>{why}</i>")
+            lines.append(
+                "\nЯка найближча конкретна дія по кожному? Поки її немає — "
+                "проєкт стоїть."
+            )
             client.send_message(admin, "\n".join(lines))
         elif cmd in ("later", "read", "watch", "links"):
             from app.modules.resources.models import ResourceKind

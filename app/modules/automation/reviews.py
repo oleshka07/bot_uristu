@@ -90,6 +90,14 @@ def weekly_review_text(db) -> str:
         lines.append("\n🎯 <b>Цілі</b>")
         for g in goals[:5]:
             lines.append(f"• {_esc(g.title)} — {len(g.contacts)} причетних")
+    from app.modules.projects import service as _proj
+
+    stalled = _proj.stalled_projects(db)
+    if stalled:
+        names = ", ".join(_esc(p.name) for p, _ in stalled[:4])
+        lines.append(
+            f"\n⚠️ <b>Без наступної дії</b>: {len(stalled)} — {names}. /stalled"
+        )
     from app.modules.resources import service as _res
 
     parked = _res.list_open(db)

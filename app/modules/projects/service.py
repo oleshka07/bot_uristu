@@ -59,3 +59,40 @@ def delete(db: Session, project: Project) -> None:
         row.project_id = None
     db.delete(project)
     db.commit()
+
+
+def stalled_projects(db: Session) -> list[tuple[Project, str]]:
+    """Active projects with no next action — GTD's classic silent failure.
+
+    A project stalls when nothing on it is actually doable: either it has no
+    open task at all, or everything left is waiting on someone else. Paused
+    projects are deliberately parked, so they never count as stalled.
+
+    Returns [(project, reason)] with reason in {"empty", "waiting"}.
+    """
+    from sqlalchemy import select
+
+    from app.modules.tasks.models import Task, TaskKind, TaskStatus
+
+    out: list[tuple[Project, str]] = []
+    for p in list_projects(db):
+        if p.status != ProjectStatus.active:
+            continue
+        open_tasks = list(
+            db.scalars(
+                select(Task).where(
+                    Task.project_id == p.id,
+                    Task.deleted_at.is_(None),
+                    Task.status != TaskStatus.done,
+                )
+            ).unique()
+        )
+        doable = [
+            t
+            for t in open_tasks
+            if t.kind == TaskKind.task and t.status != TaskStatus.hold
+        ]
+        if doable:
+            continue
+        out.append((p, "waiting" if open_tasks else "empty"))
+    return out
