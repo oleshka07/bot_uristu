@@ -62,6 +62,7 @@ def run() -> None:
             {"command": "later", "description": "Посилання на потім"},
             {"command": "stalled", "description": "Проєкти без наступної дії"},
             {"command": "contexts", "description": "Контексти задач"},
+            {"command": "review", "description": "Тижневий огляд"},
             {"command": "activity", "description": "Що робив бот + стан"},
             {"command": "enrich", "description": "Підтягнути дані з Telegram"},
             {"command": "help", "description": "Довідка"},

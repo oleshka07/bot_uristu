@@ -1787,6 +1787,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/later — посилання «на потім» (кинь сюди лінк)\n"
                 "/stalled — проєкти без наступної дії\n"
                 "/contexts — контексти · /next @дзвінки — що можу зараз\n"
+                "/review — тижневий огляд одним ритуалом\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши або надиктовуй боту — він сам розбере намір:\n"
                 "• кинь посилання (+ «подивитись про воронки») → у /later\n"
@@ -2049,6 +2050,12 @@ def _handle_command(client, admin: int, text: str) -> None:
                 who = r.contact.full_name if r.contact else "—"
                 lines.append(f"• {_esc(r.text)} — <b>{_esc(who)}</b> ({when})")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("review", "ohliad", "weekreview"):
+            from app.modules.automation import reviews as _rev
+
+            text_out = _rev.full_review_text(db)
+            for i in range(0, len(text_out), 3800):
+                client.send_message(admin, text_out[i : i + 3800])
         elif cmd in ("stalled", "stuck", "zastriali"):
             from app.modules.projects import service as _proj
 
