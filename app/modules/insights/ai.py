@@ -290,7 +290,8 @@ def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> s
         return _fallback_event_message(contact, event)
     system = (
         "You write short, sincere, personal messages for meaningful moments. "
-        "No clichés, no emojis unless natural, match a warm friendly tone."
+        "No clichés, NO emojis at all, match a warm friendly tone. "
+        "Reply in the language the contact uses."
     )
     prompt = (
         f"Write a 1–3 sentence message to {contact.full_name} about this event:\n"
@@ -298,9 +299,8 @@ def suggest_event_message(contact: models.Contact, event: models.LifeEvent) -> s
         f"  {event.description or ''}\n\n"
         f"Relationship: {contact.relationship_type.value}."
     )
-    return llm.text(system, prompt, max_tokens=400) or _fallback_event_message(
-        contact, event
-    )
+    out = _strip_emoji(llm.text(system, prompt, max_tokens=400))
+    return out or _fallback_event_message(contact, event)
 
 
 def build_style_card(sample: list[str]) -> str | None:
