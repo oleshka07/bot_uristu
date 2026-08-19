@@ -208,3 +208,65 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
     # kind=None → віддаємо ВСЕ (задачі + обовʼязки + очікування): агент розкладе
     # їх по своїх списках у focus.md.
     return list_tasks(db, include_done=True, kind=None), applied, deleted
+
+
+# ── GTD contexts ─────────────────────────────────────────────────────────────
+# Where/with-what a task can actually be done. Stored in the existing `tags`
+# field as "@дзвінки" (focus.md on the PC can write them too), plus derived
+# from item_type so old tasks get a context without re-tagging.
+
+_CONTEXT_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "@дзвінки": ("дзвін", "дзвонит", "телефон", "call", "подзвон", "созвон"),
+    "@компʼютер": ("комп", "ноут", "computer", "pc", "лист", "email", "файл"),
+    "@місто": ("місто", "місті", "вулиц", "errand", "магазин", "банк", "пошт"),
+    "@дім": ("дім", "дома", "вдома", "home", "хата"),
+    "@офіс": ("офіс", "office", "робот"),
+    "@люди": ("люди", "написат", "поговорит", "зустріч", "meeting"),
+}
+
+
+def normalize_context(raw: str | None) -> str | None:
+    """'дзвінки' / '@Дзвінок' / 'call' → '@дзвінки'. Unknown words keep their
+    own shape ('@клієнти') so ad-hoc contexts still work."""
+    if not raw:
+        return None
+    word = raw.strip().lstrip("@").strip().lower()
+    if not word:
+        return None
+    for canonical, stems in _CONTEXT_SYNONYMS.items():
+        if any(word.startswith(s) or s.startswith(word) for s in stems if len(word) > 2):
+            return canonical
+    return "@" + word
+
+
+def task_contexts(task: Task) -> set[str]:
+    """Contexts a task belongs to: explicit @tags plus one derived from
+    item_type (so 'дзвінок' lands in @дзвінки without any tagging)."""
+    out: set[str] = set()
+    for tag in (task.tags or "").split(","):
+        tag = tag.strip()
+        if tag.startswith("@"):
+            ctx = normalize_context(tag)
+            if ctx:
+                out.add(ctx)
+    derived = normalize_context(task.item_type) if task.item_type else None
+    if derived:
+        out.add(derived)
+    return out
+
+
+def list_contexts(db: Session) -> dict[str, int]:
+    """Context → how many open tasks are doable in it, biggest first."""
+    counts: dict[str, int] = {}
+    for t in list_tasks(db):
+        for ctx in task_contexts(t):
+            counts[ctx] = counts.get(ctx, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def tasks_in_context(db: Session, context: str) -> list[Task]:
+    """Open tasks doable in this context, in the usual execution order."""
+    ctx = normalize_context(context)
+    if not ctx:
+        return []
+    return [t for t in list_tasks(db) if ctx in task_contexts(t)]

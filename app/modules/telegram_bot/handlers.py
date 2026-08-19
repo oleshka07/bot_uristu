@@ -1786,6 +1786,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/ideas — мої ідеї · /idea &lt;№&gt; — відкрити\n"
                 "/later — посилання «на потім» (кинь сюди лінк)\n"
                 "/stalled — проєкти без наступної дії\n"
+                "/contexts — контексти · /next @дзвінки — що можу зараз\n"
                 "/activity — що робив бот + стан системи\n\n"
                 "🤖 Пиши або надиктовуй боту — він сам розбере намір:\n"
                 "• кинь посилання (+ «подивитись про воронки») → у /later\n"
@@ -1858,9 +1859,48 @@ def _handle_command(client, admin: int, text: str) -> None:
             for g in goals:
                 lines.append(f"• {_esc(g.title)} — {len(g.contacts)} контакт(ів)")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("contexts", "context", "ctx"):
+            from app.modules.tasks import service as tasks_service
+
+            counts = tasks_service.list_contexts(db)
+            if not counts:
+                client.send_message(
+                    admin,
+                    "Контекстів ще немає. Додай задачі тег на кшталт "
+                    "<code>@дзвінки</code> — і зможеш питати «що я можу "
+                    "зробити прямо зараз» через /next @дзвінки.",
+                )
+                return
+            lines = ["🧭 <b>Контексти</b> — де це можна зробити"]
+            for ctx, n in counts.items():
+                lines.append(f"• {_esc(ctx)} — {n}")
+            lines.append("\n/next &lt;контекст&gt; — перша задача звідти.")
+            client.send_message(admin, "\n".join(lines))
         elif cmd in ("next", "task"):
             from app.modules.tasks import service as tasks_service
 
+            if arg.strip():
+                ctx = tasks_service.normalize_context(arg)
+                in_ctx = tasks_service.tasks_in_context(db, arg)
+                if not in_ctx:
+                    client.send_message(
+                        admin,
+                        f"У контексті {_esc(ctx or arg)} задач немає. "
+                        "/contexts — що доступно.",
+                    )
+                    return
+                task = in_ctx[0]
+                client.send_message(
+                    admin,
+                    f"🎯 <b>Зараз</b> · {_esc(ctx or arg)}"
+                    + (f" (ще {len(in_ctx) - 1})" if len(in_ctx) > 1 else "")
+                    + "\n\n" + _esc(task.title) + "\n" + _task_meta(task),
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "✓ Готово", "callback_data": f"tk:done:{task.id}"},
+                        {"text": "▶ Взяв у роботу", "callback_data": f"tk:cur:{task.id}"},
+                    ]]},
+                )
+                return
             task = tasks_service.next_task(db)
             if task is None:
                 client.send_message(admin, "Задач немає — усе закрито 🎉")
@@ -1876,11 +1916,16 @@ def _handle_command(client, admin: int, text: str) -> None:
         elif cmd == "tasks":
             from app.modules.tasks import service as tasks_service
 
-            tasks = tasks_service.list_tasks(db)
+            if arg.strip():
+                tasks = tasks_service.tasks_in_context(db, arg)
+                head = f"📋 <b>Задачі</b> · {_esc(tasks_service.normalize_context(arg) or arg)}"
+            else:
+                tasks = tasks_service.list_tasks(db)
+                head = "📋 <b>Задачі</b> — у порядку виконання"
             if not tasks:
                 client.send_message(admin, "Задач немає — усе закрито 🎉")
                 return
-            lines = ["📋 <b>Задачі</b> — у порядку виконання"]
+            lines = [head]
             for t in tasks[:15]:
                 lines.append(f"• {_esc(t.title)} — {_task_meta(t)}")
             client.send_message(admin, "\n".join(lines))
