@@ -100,6 +100,8 @@ EXPECTED_ROUTES = {
     ("GET", "/api/resources/stats"),
     ("PATCH", "/api/resources/{resource_id}"),
     ("DELETE", "/api/resources/{resource_id}"),
+    ("POST", "/api/timereport/daily"),
+    ("GET", "/api/timereport/daily/preview"),
 }
 
 

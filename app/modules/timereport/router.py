@@ -19,6 +19,11 @@ from . import service
 router = APIRouter(prefix="/api/timereport", tags=["timereport"])
 
 
+class DailyIn(BaseModel):
+    date: str
+    payload: dict
+
+
 class DeliverIn(BaseModel):
     markdown: str
     request_id: int | None = None
@@ -38,6 +43,21 @@ def poll(db: Session = Depends(get_db)):
         "request_id": req.id if req else None,
         "period": req.period if req else None,
     }
+
+
+@router.post("/daily")
+def daily(body: DailyIn, db: Session = Depends(get_db)):
+    """Агент з ПК шле денний зріз (о 20:00 і о 22:00). Тут лише зберігаємо."""
+    from datetime import date
+
+    service.save_snapshot(db, date.fromisoformat(body.date), body.payload)
+    return {"ok": True}
+
+
+@router.get("/daily/preview")
+def daily_preview(db: Session = Depends(get_db)):
+    """Подивитись, яким буде вечірнє зведення (без надсилання)."""
+    return {"text": service.daily_digest(db)}
 
 
 @router.post("/deliver")

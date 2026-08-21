@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # Proactive check-ins / reviews to Telegram.
     checkin_enabled: bool = True
     checkin_hour: int = 13  # local server hour for the midday nudge
+    evening_digest_hour: int = 22   # вечірнє зведення дня
+    evening_digest_minute: int = 10
     weekly_review_enabled: bool = True
     weekly_review_hour: int = 9  # Monday morning network review
     reflection_enabled: bool = True

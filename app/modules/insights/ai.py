@@ -914,3 +914,18 @@ def analyze_time_report(markdown: str, goals: list[str]) -> str | None:
     )
     user = f"{goals_block}\n\nЗВІТ:\n{markdown[:8000]}"
     return _clean(llm.text(system, user, max_tokens=900, thinking=True))
+
+
+def analyze_day(digest: str, goals: list[str]) -> str | None:
+    """Кілька речень порад до денного зведення. Коротко — увечері довге не читають."""
+    if not llm.enabled() or not (digest or "").strip():
+        return None
+    goals_block = ("Цілі: " + "; ".join(goals)) if goals else "Цілей не задано."
+    system = (
+        "Ти — коуч з продуктивності. Нижче — коротке зведення дня з ПК і цілі "
+        "користувача. Відповідай УКРАЇНСЬКОЮ, максимум 3 речення або 3 пункти "
+        "через «•». Скажи: що з дня вело до цілей, що було відволіканням, "
+        "і ОДНУ конкретну дію на завтра. Без markdown, без емодзі, без води."
+    )
+    return _clean(llm.text(system, f"{goals_block}\n\n{digest}",
+                           max_tokens=260, thinking=False))

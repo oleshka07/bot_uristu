@@ -40,6 +40,15 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+    # Вечірнє зведення дня: ПК шле зріз о 20:00 і 22:00, ми звітуємо о 22:10.
+    _scheduler.add_job(
+        run_daily_digest,
+        CronTrigger(hour=settings.evening_digest_hour,
+                    minute=settings.evening_digest_minute),
+        id="evening_digest",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 
@@ -93,3 +102,16 @@ def shutdown() -> None:
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
+
+
+def run_daily_digest() -> None:
+    """Коротке зведення дня в Telegram (о 22:10 за часом сервера)."""
+    from app.core.database import SessionLocal
+    from app.modules.timereport import service as timereport
+
+    try:
+        with SessionLocal() as db:
+            sent = timereport.send_daily(db)
+        logger.info("evening digest sent=%s", sent)
+    except Exception as exc:
+        logger.warning("evening digest failed: %s", exc)
