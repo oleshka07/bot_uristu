@@ -185,6 +185,7 @@ def sync(db: Session, payload: SyncRequest) -> tuple[list[Task], int, int]:
             task.due_date = incoming.due_date
         if incoming.duration_min is not None:
             task.duration_min = incoming.duration_min
+        task.goal_id = incoming.goal_id
         task.deleted_at = None
         seen.add(task.uid)
         parent_of[task.uid] = incoming.parent_uid

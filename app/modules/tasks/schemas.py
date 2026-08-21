@@ -78,6 +78,7 @@ class TaskSyncIn(BaseModel):
     item_type: str | None = None
     counterpart: str | None = None
     recur: str | None = None
+    goal_id: int | None = None
 
 
 class SyncRequest(BaseModel):
