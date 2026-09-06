@@ -63,15 +63,14 @@ def daily_preview(db: Session = Depends(get_db)):
 @router.post("/deliver")
 def deliver(payload: DeliverIn, db: Session = Depends(get_db)):
     from app.modules.automation import telegram
-    from app.modules.goals.models import GoalStatus
-    from app.modules.goals.service import list_goals
+    from app.modules.goals.service import active_goals
     from app.modules.insights import ai
 
     md = (payload.markdown or "").strip()
     if not md:
         return {"ok": False, "error": "empty report"}
 
-    goals = [g.title for g in list_goals(db, status=GoalStatus.active)]
+    goals = [g.title for g in active_goals(db)]
     analysis = ai.analyze_time_report(md, goals)
 
     sent = False

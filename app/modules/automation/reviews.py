@@ -29,10 +29,9 @@ def _configured() -> bool:
 
 
 def _active_goals(db):
-    from app.modules.goals.models import GoalStatus
-    from app.modules.goals.service import list_goals
+    from app.modules.goals.service import active_goals
 
-    return list_goals(db, status=GoalStatus.active)
+    return active_goals(db)
 
 
 def _reached_out_since(db, days: int) -> int:

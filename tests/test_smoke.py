@@ -27,6 +27,8 @@ EXPECTED_TABLES = {
     "time_report_requests",
     "ideas",
     "resources",
+    "goal_checkins",
+    "coach_settings",
 }
 
 EXPECTED_ROUTES = {
@@ -102,6 +104,11 @@ EXPECTED_ROUTES = {
     ("DELETE", "/api/resources/{resource_id}"),
     ("POST", "/api/timereport/daily"),
     ("GET", "/api/timereport/daily/preview"),
+    ("GET", "/api/coach/board"),
+    ("GET", "/api/coach/settings"),
+    ("PATCH", "/api/coach/settings"),
+    ("GET", "/api/coach/checkins"),
+    ("POST", "/api/coach/ask"),
 }
 
 

@@ -1,0 +1,324 @@
+"""Логіка коуча: вибір цілі дня, журнал прогресу, зріз для сторінки.
+
+Сховище одне — наша БД: цілі лежать у ``goals``, журнал у ``goal_checkins``.
+Відкрита звірка (рядок без ``answered_at``) водночас є памʼяттю бота про те,
+яке питання зараз висить, тож окремого стану тримати не треба.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.modules.goals.models import ACTIVE_STATUSES, Goal, GoalStatus
+from app.modules.goals.service import active_goals, list_goals
+
+from .models import CoachSettings, GoalCheckin
+
+logger = logging.getLogger("networking.coach")
+
+#: Скільки годин відкрита звірка ще приймає відповідь.
+ANSWER_WINDOW_HOURS = 36
+
+_NOTE_DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{2})\b")
+
+
+# ── Налаштування ────────────────────────────────────────────────────────────
+
+
+def get_settings(db: Session) -> CoachSettings:
+    """Єдиний рядок налаштувань; створюється при першому зверненні."""
+    row = db.get(CoachSettings, 1)
+    if row is None:
+        row = CoachSettings(id=1)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+# ── Журнал цілі ─────────────────────────────────────────────────────────────
+
+
+def note_date(when: datetime | date | None = None) -> str:
+    """Дата у форматі журналу — «дд.мм.рр»."""
+    when = when or datetime.now()
+    return when.strftime("%d.%m.%y")
+
+
+def append_note(notes: str | None, summary: str, when: datetime | None = None) -> str:
+    """Дописує рядок «дд.мм.рр: суть», не затираючи попередні записи."""
+    line = f"{note_date(when)}: {' '.join(summary.split())}"
+    before = (notes or "").rstrip()
+    return f"{before}\n{line}" if before else line
+
+
+def last_touch(goal: Goal) -> date | None:
+    """Остання дата з журналу цілі або ``None``, якщо записів ще не було."""
+    best: date | None = None
+    for dd, mm, yy in _NOTE_DATE_RE.findall(goal.coach_notes or ""):
+        try:
+            found = date(2000 + int(yy), int(mm), int(dd))
+        except ValueError:
+            continue
+        if best is None or found > best:
+            best = found
+    return best
+
+
+# ── Вибір цілі дня ──────────────────────────────────────────────────────────
+
+
+def pick_goal(db: Session, *, exclude_ids: set[int] | None = None) -> Goal | None:
+    """Ціль, про яку питати сьогодні.
+
+    Спершу ті, яких коуч ще не торкався, далі — найдавніше торкані; за
+    рівності виграє вищий пріоритет. Це тримає в полі зору цілі, які інакше
+    тихо лежать без руху весь рік.
+    """
+    skip = exclude_ids or set()
+    pool = [g for g in active_goals(db) if g.id not in skip]
+    if not pool:
+        return None
+    pool.sort(
+        key=lambda g: (
+            last_touch(g) is not None,
+            last_touch(g) or date.min,
+            -g.priority,
+            g.id,
+        )
+    )
+    return pool[0]
+
+
+def answered_goal_ids(db: Session, on_day: date) -> set[int]:
+    """Цілі, на які власник відповів у вказаний день (локальний час)."""
+    start = datetime.combine(on_day, datetime.min.time())
+    rows = db.scalars(
+        select(GoalCheckin).where(
+            GoalCheckin.answered_at.is_not(None),
+            GoalCheckin.source == "bot",
+        )
+    ).all()
+    end = start + timedelta(days=1)
+    out = set()
+    for row in rows:
+        when = _as_local(row.answered_at)
+        if when and start <= when < end:
+            out.add(row.goal_id)
+    return out
+
+
+def _as_local(value: datetime | None) -> datetime | None:
+    """Зводить збережений UTC-час до наївного локального — час сервера."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone().replace(tzinfo=None)
+
+
+# ── Відкрита звірка ─────────────────────────────────────────────────────────
+
+
+def pending_checkin(db: Session) -> GoalCheckin | None:
+    """Питання, яке зараз чекає на відповідь (і ще не протухло)."""
+    row = db.scalars(
+        select(GoalCheckin)
+        .where(GoalCheckin.answered_at.is_(None), GoalCheckin.source == "bot")
+        .order_by(GoalCheckin.asked_at.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    asked = _as_local(row.asked_at)
+    if asked and datetime.now() - asked > timedelta(hours=ANSWER_WINDOW_HOURS):
+        return None
+    return row
+
+
+def asked_today(db: Session) -> GoalCheckin | None:
+    """Звірка, створена сьогодні — щоб не питати двічі за день."""
+    today = date.today()
+    row = db.scalars(
+        select(GoalCheckin)
+        .where(GoalCheckin.source == "bot")
+        .order_by(GoalCheckin.asked_at.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    asked = _as_local(row.asked_at)
+    return row if asked and asked.date() == today else None
+
+
+def open_question(db: Session, *, force: bool = False) -> tuple[GoalCheckin, str] | None:
+    """Створює звірку і повертає її разом із текстом питання.
+
+    ``None`` — коли питати нема про що: сьогодні вже питали (і це не ``force``)
+    або немає жодної активної цілі.
+    """
+    from app.modules.insights import ai
+
+    if not force and asked_today(db) is not None:
+        return None
+
+    exclude = answered_goal_ids(db, date.today() - timedelta(days=1))
+    goal = pick_goal(db, exclude_ids=exclude)
+    if goal is None and exclude:
+        # Єдина активна ціль — вчорашня; краще спитати повторно, ніж мовчати.
+        goal = pick_goal(db)
+    if goal is None:
+        return None
+
+    theme = get_settings(db).theme or ""
+    question = ai.coach_question(goal.title, goal.status, goal.coach_notes or "", theme)
+    if not question:
+        question = f"Ціль: {goal.title}. Статус: {goal.status}. Що по ній зараз?"
+
+    checkin = GoalCheckin(goal_id=goal.id, question=question, status_before=goal.status)
+    db.add(checkin)
+    db.commit()
+    db.refresh(checkin)
+    return checkin, question
+
+
+def record_answer(db: Session, answer: str) -> str | None:
+    """Розбирає відповідь на відкрите питання і оновлює ціль.
+
+    Повертає текст реакції для власника або ``None``, якщо відкритого
+    питання немає — тоді викликач має обробити повідомлення по-своєму.
+    """
+    from app.modules.insights import ai
+
+    checkin = pending_checkin(db)
+    if checkin is None:
+        return None
+    goal = db.get(Goal, checkin.goal_id)
+    if goal is None:
+        checkin.answered_at = datetime.now(timezone.utc)
+        checkin.answer = answer
+        db.commit()
+        return "Ціль, про яку було питання, вже видалена."
+
+    review = ai.coach_review(
+        goal.title, goal.status, goal.coach_notes or "", answer
+    ) or {}
+    summary = (review.get("summary") or "").strip()
+    if not summary:
+        # Без AI (або якщо він мовчить) кладемо в журнал саму відповідь.
+        summary = " ".join(answer.split())[:280]
+
+    goal.coach_notes = append_note(goal.coach_notes, summary)
+    checkin.summary = summary[:300]
+
+    new_status = (review.get("status") or "").strip().lower()
+    if new_status and new_status in set(GoalStatus) and new_status != goal.status:
+        checkin.status_after = new_status
+        goal.status = new_status
+
+    checkin.answer = answer
+    checkin.answered_at = datetime.now(timezone.utc)
+    db.commit()
+
+    reply = (review.get("reply") or "").strip() or "Прийняв."
+    tail = ["записав"]
+    if checkin.status_after:
+        tail.append(f"статус -> {checkin.status_after}")
+    return f"{reply}\n\n({', '.join(tail)})"
+
+
+def mark_nudged(db: Session, checkin: GoalCheckin) -> None:
+    checkin.nudges = (checkin.nudges or 0) + 1
+    db.commit()
+
+
+def log_status_change(db: Session, goal: Goal, before: str, after: str) -> None:
+    """Фіксує ручну зміну статусу на сторінці — щоб тиждень бачив і її."""
+    if before == after:
+        return
+    now = datetime.now(timezone.utc)
+    db.add(
+        GoalCheckin(
+            goal_id=goal.id,
+            asked_at=now,
+            answered_at=now,
+            source="web",
+            status_before=before,
+            status_after=after,
+            summary=f"статус: {before} -> {after}",
+        )
+    )
+    db.commit()
+
+
+# ── Зріз для сторінки і тижневого підсумку ──────────────────────────────────
+
+
+def _bucket(goals: list[Goal]) -> dict:
+    counts = {str(s): 0 for s in GoalStatus}
+    for g in goals:
+        if g.status in counts:
+            counts[g.status] += 1
+    total = len(goals)
+    done = counts[str(GoalStatus.done)]
+    closed = done + counts[str(GoalStatus.cancelled)]
+    pct = lambda n: round(n * 100 / total) if total else 0  # noqa: E731
+    return {
+        "total": total,
+        "counts": counts,
+        "percents": {k: pct(v) for k, v in counts.items()},
+        "done": done,
+        "done_pct": pct(done),
+        # Заголовний відсоток шаблону — «done and cancelled»: питання закрите.
+        "closed": closed,
+        "closed_pct": pct(closed),
+    }
+
+
+def board(db: Session) -> dict:
+    """Три дашборди (Pers, Work, разом) і всі цілі за пріоритетом."""
+    goals = list_goals(db)
+    goals.sort(key=lambda g: (-g.priority, g.id))
+    return {
+        "theme": get_settings(db).theme or "",
+        "pers": _bucket([g for g in goals if g.area == "pers"]),
+        "work": _bucket([g for g in goals if g.area == "work"]),
+        "all": _bucket(goals),
+        "active": len([g for g in goals if g.status in ACTIVE_STATUSES]),
+    }
+
+
+def week_changes(db: Session, days: int = 7) -> list[GoalCheckin]:
+    """Звірки зі зміною статусу за період — і з бота, і зі сторінки."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return list(
+        db.scalars(
+            select(GoalCheckin)
+            .where(
+                GoalCheckin.status_after.is_not(None),
+                GoalCheckin.answered_at >= cutoff,
+            )
+            .order_by(GoalCheckin.answered_at)
+        )
+    )
+
+
+def week_entries(db: Session, days: int = 7) -> list[GoalCheckin]:
+    """Звірки із записом у журнал за період."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return list(
+        db.scalars(
+            select(GoalCheckin)
+            .where(
+                GoalCheckin.source == "bot",
+                GoalCheckin.summary.is_not(None),
+                GoalCheckin.answered_at >= cutoff,
+            )
+            .order_by(GoalCheckin.answered_at)
+        )
+    )

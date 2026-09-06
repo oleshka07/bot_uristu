@@ -26,8 +26,3 @@ networking.db
 
 # Local compose overrides (server-specific; use the .example as a template)
 docker-compose.override.yml
-
-# Node / Cloudflare Worker (coach-worker)
-node_modules/
-.wrangler/
-.dev.vars

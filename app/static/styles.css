@@ -211,3 +211,43 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .between { justify-content: space-between; }
 .mt { margin-top: 16px; }
 .mb { margin-bottom: 12px; }
+
+/* ── Трекер цілей ────────────────────────────────────────────────────── */
+.theme-line { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; color: var(--muted); }
+.theme-line input {
+  flex: 1; background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 14px;
+}
+.big { font-size: 24px; font-weight: 600; }
+table.mini { width: 100%; border-collapse: collapse; }
+table.mini td { padding: 2px 0; font-size: 13px; }
+table.mini .sum td { border-top: 1px solid var(--border); padding-top: 6px; font-weight: 600; }
+.num { text-align: right; width: 52px; }
+.scroll-x { overflow-x: auto; }
+table.gtable { width: 100%; border-collapse: collapse; min-width: 980px; }
+.gtable th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); font-weight: 600; padding: 8px 8px; border-bottom: 1px solid var(--border);
+}
+.gtable td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.gtable tr:last-child td { border-bottom: 0; }
+.gtable .goal-title { min-width: 260px; }
+.gtable .note { max-width: 240px; font-size: 12px; color: var(--muted); }
+.gtable .cell {
+  background: transparent; color: var(--text); border: 1px solid transparent;
+  border-radius: 6px; padding: 4px 6px; font-size: 13px; font-family: inherit; width: 100%;
+}
+.gtable .cell:hover { border-color: var(--border); }
+.gtable .cell:focus { outline: none; border-color: var(--accent); background: var(--panel-2); }
+.gtable .cell.status { font-weight: 600; }
+.gtable .s-done { color: var(--good); }
+.gtable .s-almost { color: var(--warm); }
+.gtable .s-progress { color: var(--accent); }
+.gtable .s-none { color: var(--muted); }
+.gtable .s-cancelled { color: var(--hot); }
+.gtable .s-postponed { color: var(--accent-2); }
+.linklike {
+  background: none; border: 0; padding: 0; color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
+.linklike:hover { color: var(--accent); }

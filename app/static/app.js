@@ -626,8 +626,17 @@ function confirmDelete(c) {
 }
 
 
-/* ── Goals ───────────────────────────────────────────────── */
-const GOAL_STATUSES = ["active", "paused", "done", "dropped"];
+/* ── Goals (трекер цілей) ─────────────────────────────────── */
+const GOAL_STATUSES = ["not started", "in progress", "almost", "done", "cancelled",
+  "postponed to next year", "postponed to far future"];
+const GOAL_HORIZONS = { present: "Present", future: "Future", far_future: "Far Future" };
+const GOAL_AREAS = { pers: "Pers", work: "Work" };
+const GOAL_PRIORITIES = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10];
+const STATUS_CLASS = {
+  "done": "s-done", "almost": "s-almost", "in progress": "s-progress",
+  "not started": "s-none", "cancelled": "s-cancelled",
+  "postponed to next year": "s-postponed", "postponed to far future": "s-postponed",
+};
 
 /* ── Tasks ─────────────────────────────────────────────────────────────── */
 const TASK_STATUS = {
@@ -733,33 +742,108 @@ function openTaskForm(t = null) {
   });
 }
 
+const goalOpt = (value, label, current) =>
+  `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(label)}</option>`;
+
+function lastNote(notes) {
+  const lines = String(notes || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "";
+}
+
+function goalStatCard(label, b) {
+  const rows = GOAL_STATUSES.filter((st) => b.counts[st])
+    .map((st) => `<tr><td>${esc(st)}</td><td class="num">${b.counts[st]}</td>
+      <td class="num muted">${b.percents[st]}%</td></tr>`).join("");
+  return `<div class="card">
+    <div class="flex between"><h3 class="section-title" style="margin:0">${esc(label)}</h3>
+      <span class="big">${b.closed_pct}%</span></div>
+    <div class="muted mb">Цілей: <b>${b.total}</b> · done: <b>${b.done}</b> (${b.done_pct}%)</div>
+    <table class="mini">${rows || '<tr><td class="muted">порожньо</td></tr>'}
+      <tr class="sum"><td>done and cancelled</td><td class="num">${b.closed}</td>
+        <td class="num muted">${b.closed_pct}%</td></tr></table>
+  </div>`;
+}
+
 async function renderGoals() {
   const main = $("#main");
-  main.innerHTML = `<div class="view-head"><h2>Goals</h2>
-    <button class="btn primary" id="new-goal">+ New goal</button></div>
-    <div class="empty"><span class="spinner"></span> Loading…</div>`;
+  main.innerHTML = `<div class="view-head"><h2>Цілі</h2>
+    <div class="flex" style="gap:8px">
+      <button class="btn" id="coach-settings">Коуч</button>
+      <button class="btn" id="coach-ask">Спитати зараз</button>
+      <button class="btn primary" id="new-goal">+ ціль</button>
+    </div></div>
+    <div id="goals-body" class="empty"><span class="spinner"></span> Завантаження…</div>`;
   $("#new-goal").addEventListener("click", () => openGoalForm());
-  let goals;
-  try { goals = await api("/goals"); } catch (e) { return showError(e); }
-  const body = goals.length ? goals.map((g) => `
-    <div class="card mb">
-      <div class="flex between">
-        <div><h3 class="section-title" style="margin:0">${esc(g.title)}</h3>
-          <div class="muted">${esc(g.status)} · priority ${g.priority}${g.target_date ? " · due " + g.target_date : ""}</div></div>
-        <div class="flex" style="gap:6px">
-          <button class="btn small" data-edit="${g.id}">Edit</button>
-          <button class="btn small danger" data-del="${g.id}">Delete</button>
-        </div>
-      </div>
-      ${g.description ? `<p>${esc(g.description)}</p>` : ""}
-      <div class="tags mt">${(g.contacts || []).map((c) =>
-        `<span class="pill accent" data-goc="${g.id}:${c.id}" title="від’єднати">${esc(c.full_name)} ✕</span>`).join("")
-        || '<span class="muted">Немає прив’язаних контактів</span>'}</div>
-    </div>`).join("")
-    : `<div class="empty">Ще немає цілей. Створи першу — і прив’яжи людей на картці контакту.</div>`;
-  main.querySelector(".empty, .card")?.parentElement;
-  main.insertAdjacentHTML("beforeend", `<div id="goals-body">${body}</div>`);
-  main.querySelector(".empty")?.remove();
+  $("#coach-settings").addEventListener("click", openCoachSettings);
+  $("#coach-ask").addEventListener("click", async () => {
+    try {
+      const r = await api("/coach/ask", { method: "POST" });
+      toast(r.asked ? r.question : (r.reason || "Питати нема про що"), !r.asked);
+    } catch (e) { toast(e.message, true); }
+  });
+
+  let goals, board;
+  try {
+    [goals, board] = await Promise.all([api("/goals"), api("/coach/board")]);
+  } catch (e) { return showError(e); }
+  goals = [...goals].sort((a, b) => b.priority - a.priority || a.id - b.id);
+
+  const rows = goals.map((g) => `<tr data-goal="${g.id}">
+    <td><select class="cell" data-f="horizon">${goalOpt("", "—", g.horizon || "")}
+      ${Object.entries(GOAL_HORIZONS).map(([v, l]) => goalOpt(v, l, g.horizon || "")).join("")}</select></td>
+    <td><select class="cell" data-f="priority">
+      ${GOAL_PRIORITIES.map((n) => goalOpt(String(n), n, String(g.priority))).join("")}</select></td>
+    <td><select class="cell" data-f="area">${goalOpt("", "—", g.area || "")}
+      ${Object.entries(GOAL_AREAS).map(([v, l]) => goalOpt(v, l, g.area || "")).join("")}</select></td>
+    <td class="goal-title"><button class="linklike" data-edit="${g.id}">${esc(g.title)}</button></td>
+    <td><input class="cell" data-f="owner" value="${esc(g.owner || "")}" placeholder="—" /></td>
+    <td><input class="cell" data-f="owner2" value="${esc(g.owner2 || "")}" placeholder="—" /></td>
+    <td><select class="cell status ${STATUS_CLASS[g.status] || ""}" data-f="status">
+      ${GOAL_STATUSES.map((st) => goalOpt(st, st, g.status)).join("")}</select></td>
+    <td class="note"><button class="linklike" data-notes="${g.id}"
+      title="Відкрити журнал">${esc(lastNote(g.coach_notes)) || "—"}</button></td>
+    <td><button class="btn small danger" data-del="${g.id}">✕</button></td>
+  </tr>`).join("");
+
+  $("#goals-body").className = "";
+  $("#goals-body").innerHTML = `
+    <label class="theme-line">Тема року
+      <input id="coach-theme" value="${esc(board.theme)}"
+        placeholder="напр. Здоровʼя. Комфорт. Гроші." /></label>
+    <div class="grid stats-grid">
+      ${goalStatCard("Pers", board.pers)}
+      ${goalStatCard("Work", board.work)}
+      ${goalStatCard("Pers and Work", board.all)}
+    </div>
+    ${goals.length ? `<div class="card scroll-x"><table class="gtable">
+      <thead><tr><th>На що впливає</th><th>Пріоритет</th><th>Тип</th><th>Ціль</th>
+        <th>Відповідальний</th><th>Відповідальний #2</th><th>Статус</th>
+        <th>Останній запис</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : `<div class="empty">Ще немає цілей. Додай першу — коуч почне питати про неї щодня.</div>`}`;
+
+  $("#coach-theme").addEventListener("change", async (e) => {
+    try {
+      await api("/coach/settings", { method: "PATCH", body: JSON.stringify({ theme: e.target.value }) });
+      toast("Тему збережено");
+    } catch (err) { toast(err.message, true); }
+  });
+
+  main.querySelectorAll("[data-goal] .cell").forEach((input) =>
+    input.addEventListener("change", async () => {
+      const id = input.closest("[data-goal]").dataset.goal;
+      const field = input.dataset.f;
+      let value = input.value;
+      if (field === "priority") value = parseInt(value, 10);
+      else if (value === "") value = null;
+      try {
+        await api(`/goals/${id}`, { method: "PATCH", body: JSON.stringify({ [field]: value }) });
+        // Статус і тип міняють цифри дашбордів — перемальовуємо все.
+        if (field === "status" || field === "area") renderGoals();
+        else toast("Збережено");
+      } catch (e) { toast(e.message, true); renderGoals(); }
+    }));
+
   main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Видалити ціль?")) return;
     try { await api(`/goals/${b.dataset.del}`, { method: "DELETE" }); renderGoals(); }
@@ -767,30 +851,87 @@ async function renderGoals() {
   }));
   main.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () =>
     openGoalForm(goals.find((g) => g.id === Number(b.dataset.edit)))));
-  main.querySelectorAll("[data-goc]").forEach((b) => b.addEventListener("click", async () => {
-    const [gid, cid] = b.dataset.goc.split(":");
-    try { await api(`/goals/${gid}/contacts/${cid}`, { method: "DELETE" }); renderGoals(); }
-    catch (e) { toast(e.message, true); }
-  }));
+  main.querySelectorAll("[data-notes]").forEach((b) => b.addEventListener("click", () =>
+    openGoalNotes(goals.find((g) => g.id === Number(b.dataset.notes)))));
+}
+
+function openGoalNotes(g) {
+  openModal(`<h3>${esc(g.title)}</h3>
+    <p class="muted">Журнал коуча — рядок на кожну звірку.</p>
+    <textarea id="notes-body" rows="12" style="width:100%">${esc(g.coach_notes || "")}</textarea>
+    <div class="modal-actions"><button class="btn" id="m-cancel">Закрити</button>
+      <button class="btn primary" id="m-save">Зберегти</button></div>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#m-save").addEventListener("click", async () => {
+    try {
+      await api(`/goals/${g.id}`, {
+        method: "PATCH", body: JSON.stringify({ coach_notes: $("#notes-body").value }),
+      });
+      closeModal(); renderGoals();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+async function openCoachSettings() {
+  let cfg;
+  try { cfg = await api("/coach/settings"); } catch (e) { return toast(e.message, true); }
+  const hourPicker = (name, value) => `<select name="${name}">${
+    Array.from({ length: 24 }, (_, h) =>
+      goalOpt(String(h), `${String(h).padStart(2, "0")}:00`, String(value))).join("")}</select>`;
+  const days = ["понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя"];
+  openModal(`<h3>Коуч</h3>
+    <form id="coach-form"><div class="form-grid">
+      <label class="form-full"><input type="checkbox" name="enabled" ${cfg.enabled ? "checked" : ""} />
+        Питати щодня і підбивати тиждень</label>
+      <label>Питання дня ${hourPicker("ask_hour", cfg.ask_hour)}</label>
+      <label>Нагадування ${hourPicker("nudge_hour", cfg.nudge_hour)}</label>
+      <label>Підсумок тижня<select name="weekly_weekday">${
+        days.map((d, i) => goalOpt(String(i), d, String(cfg.weekly_weekday))).join("")}</select></label>
+      <label>о котрій ${hourPicker("weekly_hour", cfg.weekly_hour)}</label>
+    </div>
+    <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Скасувати</button>
+      <button type="submit" class="btn primary">Зберегти</button></div></form>`);
+  $("#m-cancel").addEventListener("click", closeModal);
+  $("#coach-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = {
+      enabled: fd.get("enabled") === "on",
+      ask_hour: parseInt(fd.get("ask_hour"), 10),
+      nudge_hour: parseInt(fd.get("nudge_hour"), 10),
+      weekly_weekday: parseInt(fd.get("weekly_weekday"), 10),
+      weekly_hour: parseInt(fd.get("weekly_hour"), 10),
+    };
+    try {
+      await api("/coach/settings", { method: "PATCH", body: JSON.stringify(body) });
+      closeModal(); toast("Збережено");
+    } catch (err) { toast(err.message, true); }
+  });
 }
 
 function openGoalForm(g = null) {
   openModal(`
-    <h3>${g ? "Edit goal" : "New goal"}</h3>
+    <h3>${g ? "Ціль" : "Нова ціль"}</h3>
     <form id="goal-form">
       <div class="form-grid">
-        <label class="form-full">Title *<input name="title" required value="${g ? esc(g.title) : ""}" /></label>
-        <label>Status<select name="status">${GOAL_STATUSES.map((s) =>
-          `<option value="${s}" ${g?.status === s ? "selected" : ""}>${titleCase(s)}</option>`).join("")}</select></label>
-        <label>Priority<select name="priority">
-          <option value="3" ${g?.priority === 3 ? "selected" : ""}>High</option>
-          <option value="2" ${!g || g.priority === 2 ? "selected" : ""}>Normal</option>
-          <option value="1" ${g?.priority === 1 ? "selected" : ""}>Low</option></select></label>
-        <label>Target date<input type="date" name="target_date" value="${g?.target_date || ""}" /></label>
-        <label class="form-full">Description<textarea name="description" rows="2">${g ? esc(g.description || "") : ""}</textarea></label>
+        <label class="form-full">Ціль *<input name="title" required value="${g ? esc(g.title) : ""}" /></label>
+        <label>Статус<select name="status">${GOAL_STATUSES.map((st) =>
+          goalOpt(st, st, g?.status || "not started")).join("")}</select></label>
+        <label>Пріоритет<select name="priority">${GOAL_PRIORITIES.map((n) =>
+          goalOpt(String(n), n, String(g?.priority ?? 50))).join("")}</select></label>
+        <label>На що впливає<select name="horizon">${goalOpt("", "—", g?.horizon || "")}
+          ${Object.entries(GOAL_HORIZONS).map(([v, l]) =>
+            goalOpt(v, l, g?.horizon || "")).join("")}</select></label>
+        <label>Тип<select name="area">${goalOpt("", "—", g?.area || "")}
+          ${Object.entries(GOAL_AREAS).map(([v, l]) =>
+            goalOpt(v, l, g?.area || "")).join("")}</select></label>
+        <label>Відповідальний<input name="owner" value="${esc(g?.owner || "")}" /></label>
+        <label>Відповідальний #2<input name="owner2" value="${esc(g?.owner2 || "")}" /></label>
+        <label>Дедлайн<input type="date" name="target_date" value="${g?.target_date || ""}" /></label>
+        <label class="form-full">Опис<textarea name="description" rows="2">${g ? esc(g.description || "") : ""}</textarea></label>
       </div>
-      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Cancel</button>
-        <button type="submit" class="btn primary">${g ? "Save" : "Create"}</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="m-cancel">Скасувати</button>
+        <button type="submit" class="btn primary">${g ? "Зберегти" : "Створити"}</button></div>
     </form>`);
   $("#m-cancel").addEventListener("click", closeModal);
   $("#goal-form").addEventListener("submit", async (e) => {
@@ -799,6 +940,10 @@ function openGoalForm(g = null) {
     const body = {
       title: fd.get("title"), status: fd.get("status"),
       priority: parseInt(fd.get("priority"), 10),
+      horizon: fd.get("horizon") || null,
+      area: fd.get("area") || null,
+      owner: fd.get("owner") || null,
+      owner2: fd.get("owner2") || null,
       target_date: fd.get("target_date") || null,
       description: fd.get("description") || null,
     };
@@ -812,7 +957,7 @@ function openGoalForm(g = null) {
 
 async function linkGoalToContact(contactId) {
   let goals;
-  try { goals = await api("/goals?status=active"); } catch (e) { return toast(e.message, true); }
+  try { goals = await api("/goals?active=true"); } catch (e) { return toast(e.message, true); }
   if (!goals.length) return toast("Спершу створи ціль у розділі Goals", true);
   openModal(`<h3>Прив’язати до цілі</h3>
     <div class="card">${goals.map((g) =>

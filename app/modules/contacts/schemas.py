@@ -170,7 +170,7 @@ class ContactDetail(ContactBase):
                 if f.is_current
             ],
             goals=[
-                {"id": g.id, "title": g.title, "status": g.status.value}
+                {"id": g.id, "title": g.title, "status": g.status}
                 for g in getattr(c, "goals", [])
             ],
             days_since_contact=round(warmth.days_since_last_contact(c)),

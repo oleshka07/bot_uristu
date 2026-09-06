@@ -49,6 +49,17 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+    # Коуч по цілях: одна щогодинна задача, рішення — за налаштуваннями в БД.
+    from app.modules.coach.jobs import run_coach_tick
+
+    _scheduler.add_job(
+        run_coach_tick,
+        "cron",
+        minute=5,
+        id="coach_tick",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 

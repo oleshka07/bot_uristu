@@ -32,6 +32,12 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     },
     "goals": {
         "project_id": "INTEGER",
+        # Трекер цілей: горизонт, зріз Pers/Work, відповідальні, журнал коуча.
+        "horizon": "VARCHAR(20)",
+        "area": "VARCHAR(10)",
+        "owner": "VARCHAR(120)",
+        "owner2": "VARCHAR(120)",
+        "coach_notes": "TEXT",
     },
     "contacts": {
         "external_ref": "VARCHAR(120)",
@@ -43,6 +49,69 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "auto_reply_paused": "BOOLEAN DEFAULT FALSE",
     },
 }
+
+
+# Старий статус цілі -> новий зі словника трекера.
+_GOAL_STATUS_MAP = {
+    "active": "in progress",
+    "paused": "postponed to next year",
+    "dropped": "cancelled",
+    # "done" збігається в обох словниках — переписувати нічого.
+}
+
+
+def _migrate_goal_status(engine: Engine, inspector) -> None:
+    """Переводить goals.status з БД-енума в рядок і розширює шкалу пріоритету.
+
+    Статусів стало сім замість чотирьох, а пріоритет — 10..100 замість 1..3.
+    Обидві операції ідемпотентні: після першого прогону оновлювати нічого.
+    """
+    columns = {c["name"]: c for c in inspector.get_columns("goals")}
+    status = columns.get("status")
+    if status is None:
+        return
+
+    is_sqlite = engine.dialect.name == "sqlite"
+    type_name = type(status["type"]).__name__.lower()
+
+    if "enum" in type_name and not is_sqlite:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE goals ALTER COLUMN status "
+                        "TYPE VARCHAR(40) USING status::text"
+                    )
+                )
+            logger.info("Schema patch applied: goals.status -> VARCHAR(40)")
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("goals.status type change failed: %s", exc)
+            return
+
+    try:
+        with engine.begin() as conn:
+            for old, new in _GOAL_STATUS_MAP.items():
+                conn.execute(
+                    text("UPDATE goals SET status = :new WHERE status = :old"),
+                    {"new": new, "old": old},
+                )
+            # 1/2/3 -> 30/60/90. Нова шкала починається з 10, тож значення
+            # 1..3 у базі можуть бути тільки зі старої.
+            conn.execute(
+                text(
+                    "UPDATE goals SET priority = priority * 30 "
+                    "WHERE priority BETWEEN 1 AND 3"
+                )
+            )
+    except Exception as exc:  # pragma: no cover - best effort
+        # На SQLite стара таблиця несе CHECK-обмеження зі старими статусами,
+        # і зняти його можна лише перезбиранням таблиці. Для локальної бази
+        # простіше видалити файл, ніж тягнути сюди повний ребілд.
+        logger.warning(
+            "goals.status data migration failed (%s). "
+            "Локальний SQLite: видали файл бази і дай create_all зібрати її заново.",
+            exc,
+        )
 
 
 def ensure_schema(engine: Engine) -> None:
@@ -63,3 +132,6 @@ def ensure_schema(engine: Engine) -> None:
                 logger.info("Schema patch applied: %s", stmt)
             except Exception as exc:  # pragma: no cover - best effort
                 logger.warning("Schema patch failed (%s): %s", stmt, exc)
+
+    if "goals" in existing_tables:
+        _migrate_goal_status(engine, inspect(engine))

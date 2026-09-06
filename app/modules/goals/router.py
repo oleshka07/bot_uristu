@@ -25,9 +25,10 @@ def _goal_or_404(db: Session, goal_id: int):
 @router.get("", response_model=list[GoalOut])
 def list_goals(
     status_filter: GoalStatus | None = Query(default=None, alias="status"),
+    active: bool = Query(default=False, description="Тільки цілі, що в роботі"),
     db: Session = Depends(get_db),
 ):
-    return service.list_goals(db, status=status_filter)
+    return service.list_goals(db, status=status_filter, active=active)
 
 
 @router.post("", response_model=GoalOut, status_code=status.HTTP_201_CREATED)
@@ -37,7 +38,15 @@ def create_goal(payload: GoalIn, db: Session = Depends(get_db)):
 
 @router.patch("/{goal_id}", response_model=GoalOut)
 def update_goal(goal_id: int, payload: GoalUpdate, db: Session = Depends(get_db)):
-    return service.update_goal(db, _goal_or_404(db, goal_id), payload)
+    from app.modules.coach import service as coach_service
+
+    goal = _goal_or_404(db, goal_id)
+    before = goal.status
+    updated = service.update_goal(db, goal, payload)
+    # Правку статусу руками теж пишемо в журнал — інакше тижневий підсумок
+    # бачив би тільки те, що змінив бот.
+    coach_service.log_status_change(db, updated, before, updated.status)
+    return updated
 
 
 @router.delete("/{goal_id}", status_code=status.HTTP_204_NO_CONTENT)

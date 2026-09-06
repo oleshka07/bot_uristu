@@ -18,6 +18,7 @@ from . import __version__, diagnostics
 from .config import settings
 from .database import init_db
 from .modules.admin.router import router as admin_router
+from .modules.coach.router import router as coach_router
 from .modules.contacts.router import router as contacts_router
 from .modules.dashboard.router import router as dashboard_router
 from .modules.goals.router import router as goals_router
@@ -87,6 +88,7 @@ app.include_router(tasks_router)
 app.include_router(projects_router)
 app.include_router(ideas_router)
 app.include_router(resources_router)
+app.include_router(coach_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

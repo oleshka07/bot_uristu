@@ -10,7 +10,7 @@ def _mk_goal(client, title="Launch", **kw):
 def test_goal_crud_and_linking(client):
     r = client.post("/api/contacts", json={"first_name": "Investor", "last_name": "One"})
     cid = r.json()["id"]
-    goal = _mk_goal(client, "Raise round", priority=3)
+    goal = _mk_goal(client, "Raise round", priority=90)
 
     linked = client.post(f"/api/goals/{goal['id']}/contacts/{cid}").json()
     assert [c["id"] for c in linked["contacts"]] == [cid]

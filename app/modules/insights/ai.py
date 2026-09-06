@@ -929,3 +929,119 @@ def analyze_day(digest: str, goals: list[str]) -> str | None:
     )
     return _clean(llm.text(system, f"{goals_block}\n\n{digest}",
                            max_tokens=260, thinking=False))
+
+
+# ── Коуч по цілях ──────────────────────────────────────────────────────────
+
+_COACH_PERSONA = (
+    "Ти — особистий коуч власника по його річних цілях. Мова: українська. "
+    "Пиши коротко й по суті, без емодзі, без лестощів і без вступів на "
+    "кшталт «чудово» чи «класно». Ти не хвалиш — ти щодня тиснеш на прогрес."
+)
+
+
+def coach_question(goal: str, status: str, notes: str, theme: str = "") -> str | None:
+    """Одне питання про стан цілі. Спирається на останні записи в журналі."""
+    if not llm.enabled():
+        return None
+    system = (
+        f"{_COACH_PERSONA}\n"
+        "Задай ОДНЕ питання про стан цієї цілі. Якщо в журналі є записи, "
+        "спирайся на останній: питай, що зрушило з того часу. "
+        "Максимум два речення, без передмов."
+        + (f"\nТема року власника: {theme}." if theme else "")
+    )
+    user = (
+        f"Ціль: {goal}\n"
+        f"Статус: {status}\n"
+        f"Журнал:\n{notes or 'записів ще немає'}"
+    )
+    return _strip_emoji(_clean(llm.text(system, user, max_tokens=200)))
+
+
+def coach_nudge(goal: str) -> str | None:
+    """Колюче нагадування, якщо на питання дня не відповіли."""
+    if not llm.enabled():
+        return None
+    system = (
+        f"{_COACH_PERSONA}\n"
+        "Власник за день не відповів на питання про ціль. Нагадай прямо й "
+        "колюче: без образ, але так, щоб мовчання не виглядало безкоштовним. "
+        "Одне-два речення."
+    )
+    return _strip_emoji(_clean(llm.text(system, f"Ціль: {goal}", max_tokens=160)))
+
+
+_COACH_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "Суть відповіді для журналу, 3-15 слів, без дати.",
+        },
+        "status": {
+            "type": "string",
+            "description": (
+                "Новий статус, якщо зі слів це однозначно: зробив -> done, "
+                "майже -> almost, почав/рухається -> in progress, скасував -> "
+                "cancelled, переніс -> postponed to next year / postponed to "
+                "far future. Якщо неясно — порожній рядок."
+            ),
+        },
+        "reply": {
+            "type": "string",
+            "description": "Коротка реакція власнику, одне-два речення.",
+        },
+    },
+    "required": ["summary", "status", "reply"],
+}
+
+
+def coach_review(goal: str, status: str, notes: str, answer: str) -> dict | None:
+    """Розбирає відповідь власника: що записати в журнал і чи міняти статус.
+
+    Повертає ``{"summary", "status", "reply"}``. ``status`` — порожній рядок,
+    якщо зі слів не видно однозначної зміни; викликач валідує його сам.
+    """
+    if not llm.enabled() or not answer.strip():
+        return None
+    system = (
+        f"{_COACH_PERSONA}\n"
+        "Власник відповів на питання про ціль. Витягни суть у summary "
+        "(3-15 слів, без дати, без емодзі). Постав status тільки якщо зміна "
+        "однозначна, інакше порожній рядок. У reply — коротка реакція без "
+        "похвали; якщо відповідь розмита, постав уточнювальне питання. "
+        "Respond with JSON only."
+    )
+    user = (
+        f"Ціль: {goal}\n"
+        f"Поточний статус: {status}\n"
+        f"Журнал:\n{notes or 'записів ще немає'}\n\n"
+        f"Відповідь власника: {answer.strip()}"
+    )
+    data = llm.json(system, user, _COACH_REVIEW_SCHEMA, max_tokens=400)
+    if not isinstance(data, dict):
+        return None
+    return {
+        "summary": _strip_emoji(str(data.get("summary") or "")) or "",
+        "status": str(data.get("status") or "").strip().lower(),
+        "reply": _strip_emoji(str(data.get("reply") or "")) or "",
+    }
+
+
+def coach_week_verdict(block: str, stalled: bool) -> str | None:
+    """Два-три речення підсумку тижня поверх готових цифр."""
+    if not llm.enabled():
+        return None
+    system = (
+        f"{_COACH_PERSONA}\n"
+        + (
+            "Тиждень пройшов без жодного руху по цілях. Скажи це прямо, без "
+            "пом'якшення, і назви одну дію на понеділок."
+            if stalled
+            else "Дай короткий підсумок тижня: що реально зрушило і де провал. "
+            "Назви одну дію на понеділок."
+        )
+        + " Два-три речення."
+    )
+    return _strip_emoji(_clean(llm.text(system, block, max_tokens=260)))

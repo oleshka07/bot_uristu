@@ -140,8 +140,7 @@ def send_daily(db) -> bool:
     from datetime import date as _date, datetime as _dt, timezone as _tz
 
     from app.modules.automation import telegram
-    from app.modules.goals.models import GoalStatus
-    from app.modules.goals.service import list_goals
+    from app.modules.goals.service import active_goals
     from app.modules.insights import ai
 
     from .models import DailySnapshot
@@ -151,7 +150,7 @@ def send_daily(db) -> bool:
     if not body:
         return False
 
-    goals = [g.title for g in list_goals(db, status=GoalStatus.active)]
+    goals = [g.title for g in active_goals(db)]
     advice = None
     if hasattr(ai, "analyze_day"):
         advice = ai.analyze_day(body, goals)

@@ -774,6 +774,8 @@ def handle_admin_message(client, msg: dict) -> None:
         if _looks_like_timereport(transcript):
             _request_timereport(client, admin)
             return
+        if _handle_coach_answer(client, admin, transcript):
+            return
         if _handle_assistant_intent(client, admin, transcript):
             return
         _handle_voice_intake(client, admin, transcript)
@@ -786,9 +788,31 @@ def handle_admin_message(client, msg: dict) -> None:
         if _looks_like_timereport(text):
             _request_timereport(client, admin)
             return
+        if _handle_coach_answer(client, admin, text.strip()):
+            return
         if _handle_assistant_intent(client, admin, text.strip()):
             return
         _handle_network_search(client, admin, text.strip())
+
+
+def _handle_coach_answer(client, admin: int, text: str) -> bool:
+    """Якщо висить питання коуча — це відповідь на нього.
+
+    Календарні прохання та ідеї пропускаємо далі: у них свої сильні маркери,
+    і перехопити їх під виглядом відповіді було б гірше, ніж пропустити.
+    """
+    if _looks_like_calendar(text) or _looks_like_idea(text):
+        return False
+    from app.modules.coach import service as coach_service
+
+    with SessionLocal() as db:
+        if coach_service.pending_checkin(db) is None:
+            return False
+        reply = coach_service.record_answer(db, text)
+    if not reply:
+        return False
+    client.send_message(admin, _esc(reply))
+    return True
 
 
 def _handle_channel_reply(client, admin: int, contact_id: int, msg: dict) -> None:
@@ -1765,7 +1789,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/queue — почати обхід (кому написати, з чернетками)\n"
                 "/next — що робити прямо зараз (одна задача + кнопки)\n"
                 "/tasks — усі задачі в порядку виконання\n"
-                "/goals — активні цілі та причетні люди\n"
+                "/goals — трекер цілей: цифри і що в роботі\n"
+                "/goal — питання коуча по одній цілі просто зараз\n"
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
@@ -1849,17 +1874,37 @@ def _handle_command(client, admin: int, text: str) -> None:
                    else "Запусти /embed ще раз для наступної пачки."),
             )
         elif cmd == "goals":
-            from app.modules.goals.service import list_goals
-            from app.modules.goals.models import GoalStatus
+            from app.modules.coach import service as coach_service
+            from app.modules.goals.service import active_goals
 
-            goals = list_goals(db, status=GoalStatus.active)
+            goals = active_goals(db)
             if not goals:
-                client.send_message(admin, "Немає активних цілей. Створи у веб-інтерфейсі (Goals).")
+                client.send_message(admin, "Немає активних цілей. Створи у веб-інтерфейсі (Цілі).")
                 return
+            data = coach_service.board(db)
             lines = ["🎯 <b>Активні цілі</b>"]
+            if data["theme"]:
+                lines.append(_esc(data["theme"]))
+            lines.append(
+                f"Pers {data['pers']['done']}/{data['pers']['total']} · "
+                f"Work {data['work']['done']}/{data['work']['total']} · "
+                f"разом done {data['all']['done_pct']}%"
+            )
+            lines.append("")
             for g in goals:
-                lines.append(f"• {_esc(g.title)} — {len(g.contacts)} контакт(ів)")
+                touched = coach_service.last_touch(g)
+                tail = f" · {touched:%d.%m}" if touched else " · без записів"
+                lines.append(f"• {_esc(g.title)} — {g.status}, {g.priority}{tail}")
             client.send_message(admin, "\n".join(lines))
+        elif cmd == "goal":
+            from app.modules.coach.jobs import send_question
+
+            if not send_question(force=True):
+                client.send_message(
+                    admin,
+                    "Питати нема про що: немає активних цілей або не "
+                    "налаштований Telegram.",
+                )
         elif cmd in ("contexts", "context", "ctx"):
             from app.modules.tasks import service as tasks_service
 

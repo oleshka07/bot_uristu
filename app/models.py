@@ -21,7 +21,15 @@ from app.modules.insights.models import (  # noqa: F401
     LifeEventStatus,
     StyleProfile,
 )
-from app.modules.goals.models import Goal, GoalStatus, goal_contacts  # noqa: F401
+from app.modules.coach.models import CoachSettings, GoalCheckin  # noqa: F401
+from app.modules.goals.models import (  # noqa: F401
+    ACTIVE_STATUSES,
+    Area,
+    Goal,
+    GoalStatus,
+    Horizon,
+    goal_contacts,
+)
 from app.modules.integrations.models import IntegrationToken  # noqa: F401
 from app.modules.integrations.social.models import SocialSnapshot  # noqa: F401
 from app.modules.interactions.models import (  # noqa: F401
