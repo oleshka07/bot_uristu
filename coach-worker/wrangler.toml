@@ -1,0 +1,31 @@
+name = "goals-coach"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+# Крон у Cloudflare рахується в UTC і не знає про переведення годинника.
+# Тому будимо воркер щогодини, а вже всередині рахуємо київський час
+# (Intl з timeZone=Europe/Kyiv) — літній і зимовий час працюють однаково.
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+SHEET_ID = ""          # id таблиці з URL: /spreadsheets/d/<SHEET_ID>/edit
+SHEET_TAB = ""         # назва вкладки; порожньо = перша вкладка таблиці
+ALLOWED_CHAT_ID = ""   # єдиний chat_id, з яким бот розмовляє
+TIMEZONE = "Europe/Kyiv"
+ASK_HOUR = "16"        # щоденне питання
+NUDGE_HOUR = "22"      # нагадування, якщо не відповів
+WEEKLY_HOUR = "9"      # тижневе саммері (субота)
+CLAUDE_MODEL = "claude-opus-5"
+CLAUDE_EFFORT = "low"
+
+# Пам'ять бота: яку ціль питали сьогодні + суботній знімок статусів.
+# Створити один раз: npx wrangler kv namespace create COACH_KV
+# і підставити сюди виданий id.
+[[kv_namespaces]]
+binding = "COACH_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Секрети (НЕ тут, а через `npx wrangler secret put <NAME>`):
+#   TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, GOOGLE_SA_JSON,
+#   WEBHOOK_SECRET, DASHBOARD_TOKEN

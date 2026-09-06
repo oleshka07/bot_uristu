@@ -1,0 +1,12 @@
+{
+  "name": "goals-coach-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Персональний коуч по річних цілях: Telegram-бот + сторінка-дашборд на Cloudflare Worker, дані живуть у Google Таблиці.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy"
+  }
+}
