@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re as _re
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -41,6 +42,14 @@ def _task_meta(task) -> str:
         bits.append(f"{task.duration_min} хв")
     if task.due_date:
         bits.append("до " + task.due_date.isoformat())
+    if getattr(task, "counterpart", None) and task.item_type == "нагадування":
+        bits.append("відп.: " + _esc(task.counterpart))
+    if getattr(task, "recur", None):
+        bits.append(_esc(task.recur))
+    elif task.item_type == "нагадування":
+        bits.append("періодичність не задана")
+    if getattr(task, "next_remind_at", None):
+        bits.append(f"нагадаю {task.next_remind_at:%d.%m}")
     return " · ".join(bits)
 
 
@@ -1494,6 +1503,88 @@ def _handle_idea(client, admin: int, text: str) -> bool:
     return True
 
 
+#: Явні маркери «заведи задачу» — щоб це працювало і без AI.
+_TASK_CAPTURE_RE = _re.compile(
+    r"\b(?:впиши|впісши|додай|запиши|заведи|створи)\s+задач\w*", _re.IGNORECASE
+)
+
+
+def _looks_like_task_capture(text: str) -> bool:
+    return bool(_TASK_CAPTURE_RE.search(text or ""))
+
+
+def _task_title_from_text(text: str) -> str:
+    """Прибирає службовий початок і хвіст про періодичність/відповідального."""
+    out = _TASK_CAPTURE_RE.sub("", text or "", count=1)
+    out = _re.sub(r"^\s*[:\-–—,]\s*", "", out)
+    out = _re.sub(
+        r"[,;]?\s*(?:відповідальн\w+|нагадуй|нагадувати|періодичн\w+)\b.*$",
+        "",
+        out,
+        flags=_re.IGNORECASE | _re.DOTALL,
+    )
+    out = " ".join(out.split()).strip(" .,:;-")
+    # «платити за домен щороку» -> «платити за домен»: сама періодичність
+    # живе в окремому полі, у назві вона зайва.
+    from app.modules.tasks.service import parse_recur
+
+    found = parse_recur(out)
+    if found:
+        out = _re.sub(_re.escape(found[0]) + r"\s*$", "", out, flags=_re.IGNORECASE)
+    return out.strip(" .,:;-")
+
+
+def _task_owner_from_text(text: str) -> str:
+    m = _re.search(
+        r"відповідальн\w*\s*[:\-–—]?\s*([A-ZА-ЯЇІЄҐ][\w'ʼ-]+(?:\s+[A-ZА-ЯЇІЄҐ][\w'ʼ-]+)?)",
+        text or "",
+    )
+    return m.group(1).strip() if m else ""
+
+
+def _handle_task_capture(client, admin: int, intent: dict, text: str) -> bool:
+    """«Впиши задачу: X, відповідальний Y, нагадуй раз на місяць».
+
+    Задача заводиться завжди; якщо періодичність не названа — бот питає її
+    окремим повідомленням і чекає на відповідь, бо без неї нагадувань не буде.
+    """
+    from app.modules.coach import service as coach_service
+    from app.modules.tasks import service as tasks_service
+
+    title = (intent.get("text") or "").strip() or _task_title_from_text(text)
+    if not title:
+        return False
+    owner = (intent.get("person") or "").strip() or _task_owner_from_text(text)
+    parsed = tasks_service.parse_recur(intent.get("recurrence") or "") or \
+        tasks_service.parse_recur(text)
+
+    with SessionLocal() as db:
+        task = tasks_service.create_reminder_task(
+            db,
+            title=title,
+            counterpart=owner or None,
+            recur=parsed[0] if parsed else None,
+            recur_days=parsed[1] if parsed else None,
+        )
+        who = f", відповідальний: {owner}" if owner else ""
+        if parsed:
+            client.send_message(
+                admin,
+                f"Задача: {_esc(task.title)}{_esc(who)}\n"
+                f"Нагадуватиму {_esc(parsed[0])}, наступне "
+                f"{task.next_remind_at:%d.%m.%y}.",
+            )
+            return True
+        question = (
+            f"Задача: {_esc(task.title)}{_esc(who)}\n"
+            "Як часто нагадувати? Щодня, раз на тиждень, раз на місяць, "
+            "раз на квартал?"
+        )
+        coach_service.ask_task_frequency(db, task, question)
+    client.send_message(admin, question)
+    return True
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
@@ -1518,6 +1609,8 @@ def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     action = intent.get("action")
     if action == "idea":
         return _handle_idea(client, admin, text)
+    if action == "task" or _looks_like_task_capture(text):
+        return _handle_task_capture(client, admin, intent, text)
     if action not in ("remind", "note", "cadence", "importance"):
         # Not a contact command. Calendar / idea may have no contact at all —
         # route them here, with keyword nets so they still work when the AI
@@ -1791,6 +1884,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/tasks — усі задачі в порядку виконання\n"
                 "/goals — трекер цілей: цифри і що в роботі\n"
                 "/goal — питання коуча по одній цілі просто зараз\n"
+                "/focus — топ-3 найважливіші цілі без руху\n"
+                "/week — підсумок тижня просто зараз\n"
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
@@ -1975,6 +2070,34 @@ def _handle_command(client, admin: int, text: str) -> None:
             for t in tasks[:15]:
                 lines.append(f"• {_esc(t.title)} — {_task_meta(t)}")
             client.send_message(admin, "\n".join(lines))
+        elif cmd == "focus":
+            from datetime import date
+
+            from app.modules.coach import service as coach_service
+            from app.modules.goals.service import active_goals
+
+            goals = active_goals(db)
+            if not goals:
+                client.send_message(admin, "Активних цілей немає.")
+                return
+            # Найпріоритетніші з тих, що найдовше без руху — саме вони тихо
+            # провалюються, поки увага йде на дрібне і термінове.
+            goals.sort(
+                key=lambda g: (
+                    coach_service.last_touch(g) or date.min,
+                    -g.priority,
+                )
+            )
+            lines = ["🎯 <b>Фокус</b> — найважливіше без руху"]
+            for g in goals[:3]:
+                touched = coach_service.last_touch(g)
+                since = f"тиша з {touched:%d.%m}" if touched else "жодного запису"
+                lines.append(f"• {_esc(g.title)} — {g.priority}, {g.status}, {since}")
+            client.send_message(admin, "\n".join(lines))
+        elif cmd == "week":
+            from app.modules.coach.jobs import weekly_text
+
+            client.send_message(admin, weekly_text(db))
         elif cmd == "overdue":
             _handle_command(client, admin, "/due")
         elif cmd in ("today", "network", "digest", "weekly", "monthly"):

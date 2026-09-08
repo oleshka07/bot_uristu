@@ -29,6 +29,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "item_type": "VARCHAR(40)",
         "counterpart": "VARCHAR(120)",
         "recur": "VARCHAR(20)",
+        "recur_days": "INTEGER",
+        "next_remind_at": "TIMESTAMP",
     },
     "goals": {
         "project_id": "INTEGER",
@@ -38,6 +40,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "owner": "VARCHAR(120)",
         "owner2": "VARCHAR(120)",
         "coach_notes": "TEXT",
+    },
+    "checkins": {
+        "task_id": "INTEGER",
+        "kind": "VARCHAR(20) DEFAULT 'progress'",
     },
     "contacts": {
         "external_ref": "VARCHAR(120)",
@@ -49,6 +55,31 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "auto_reply_paused": "BOOLEAN DEFAULT FALSE",
     },
 }
+
+
+def _rename_checkins(engine: Engine, tables: set[str]) -> None:
+    """goal_checkins -> checkins: звірка тепер буває і по задачі, не лише по цілі."""
+    if "goal_checkins" not in tables or "checkins" in tables:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE goal_checkins RENAME TO checkins"))
+        logger.info("Schema patch applied: goal_checkins -> checkins")
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("checkins rename failed: %s", exc)
+
+
+def _relax_checkin_goal_id(engine: Engine) -> None:
+    """Звірка по задачі не має цілі, тож goal_id мусить дозволяти NULL."""
+    if engine.dialect.name == "sqlite":
+        # SQLite не вміє знімати NOT NULL без перезбирання таблиці; локальну
+        # базу простіше видалити — вона все одно одноразова.
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE checkins ALTER COLUMN goal_id DROP NOT NULL"))
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("checkins.goal_id relax failed: %s", exc)
 
 
 # Старий статус цілі -> новий зі словника трекера.
@@ -117,6 +148,9 @@ def _migrate_goal_status(engine: Engine, inspector) -> None:
 def ensure_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+    # Перейменування — до ADD COLUMN, інакше колонки поїдуть у стару таблицю.
+    _rename_checkins(engine, existing_tables)
+    existing_tables = set(inspect(engine).get_table_names())
 
     for table, columns in _ADDED_COLUMNS.items():
         if table not in existing_tables:
@@ -133,5 +167,7 @@ def ensure_schema(engine: Engine) -> None:
             except Exception as exc:  # pragma: no cover - best effort
                 logger.warning("Schema patch failed (%s): %s", stmt, exc)
 
+    if "checkins" in existing_tables:
+        _relax_checkin_goal_id(engine)
     if "goals" in existing_tables:
         _migrate_goal_status(engine, inspect(engine))

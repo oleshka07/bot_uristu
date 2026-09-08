@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +23,8 @@ _RANK = {
     TaskStatus.done: 9,
 }
 _FAR = 10_000  # «дати немає» — в кінець
+#: Далека дата для сортування задач без нагадування — теж у кінець.
+_FAR_DT = datetime(9999, 1, 1, tzinfo=timezone.utc)
 
 
 def new_uid() -> str:
@@ -271,3 +273,129 @@ def tasks_in_context(db: Session, context: str) -> list[Task]:
     if not ctx:
         return []
     return [t for t in list_tasks(db) if ctx in task_contexts(t)]
+
+
+# ── Задачі-нагадування (періодичні) ─────────────────────────────────────────
+
+#: Слова періодичності -> інтервал у днях. Ключі шукаються підрядком.
+_RECUR_DAYS: tuple[tuple[str, int], ...] = (
+    ("щодня", 1), ("кожен день", 1), ("щоденно", 1), ("daily", 1),
+    ("раз на тиждень", 7), ("щотижня", 7), ("щотижнево", 7), ("weekly", 7),
+    ("раз на два тижні", 14), ("раз на 2 тижні", 14), ("кожні два тижні", 14),
+    ("раз на місяць", 30), ("щомісяця", 30), ("щомісячно", 30), ("monthly", 30),
+    ("раз на квартал", 90), ("щокварталу", 90), ("quarterly", 90),
+    ("раз на пів року", 182), ("раз на півроку", 182),
+    ("раз на рік", 365), ("щороку", 365), ("yearly", 365),
+)
+
+
+def parse_recur(text: str | None) -> tuple[str, int] | None:
+    """Витягує періодичність зі слів: («раз на місяць», 30).
+
+    Спершу шукає явні формати «раз на N днів/тижнів/місяців», далі — сталі
+    вирази. ``None`` — періодичності в тексті немає, її треба перепитати.
+    """
+    import re
+
+    if not text:
+        return None
+    low = " ".join(text.lower().split())
+
+    m = re.search(r"(?:раз|кожн\w*)\s+(?:на\s+)?(\d+)\s*(день|дн\w*|тижн\w*|місяц\w*)", low)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        days = n * (7 if unit.startswith("тижн") else 30 if unit.startswith("місяц") else 1)
+        if 1 <= days <= 3650:
+            return m.group(0), days
+
+    for phrase, days in _RECUR_DAYS:
+        if phrase in low:
+            return phrase, days
+    return None
+
+
+def create_reminder_task(
+    db: Session,
+    *,
+    title: str,
+    counterpart: str | None = None,
+    recur: str | None = None,
+    recur_days: int | None = None,
+    goal_id: int | None = None,
+) -> Task:
+    """Задача, про яку бот нагадуватиме сам.
+
+    Без ``recur_days`` задача створюється, але нагадувань не буде, поки
+    періодичність не назвуть — бот її перепитає.
+    """
+    task = Task(
+        uid=new_uid(),
+        title=title.strip()[:300],
+        counterpart=(counterpart or None),
+        recur=(recur or None),
+        recur_days=recur_days,
+        goal_id=goal_id,
+        item_type="нагадування",
+        next_remind_at=(
+            datetime.now(timezone.utc) + timedelta(days=recur_days)
+            if recur_days
+            else None
+        ),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def set_recurrence(db: Session, task: Task, recur: str, recur_days: int) -> Task:
+    """Проставляє періодичність і призначає перше нагадування."""
+    task.recur = recur[:20]
+    task.recur_days = recur_days
+    task.next_remind_at = datetime.now(timezone.utc) + timedelta(days=recur_days)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def to_utc(value: datetime | None) -> datetime | None:
+    """SQLite віддає час без зони — зводимо все до UTC перед порівнянням."""
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def reminder_tasks(db: Session, *, include_done: bool = False) -> list[Task]:
+    """Усі задачі-нагадування, найближчі за датою нагадування — першими."""
+    stmt = select(Task).where(Task.deleted_at.is_(None), Task.item_type == "нагадування")
+    if not include_done:
+        stmt = stmt.where(Task.status != TaskStatus.done)
+    rows = list(db.scalars(stmt))
+    rows.sort(key=lambda t: (t.next_remind_at is None, to_utc(t.next_remind_at) or _FAR_DT, t.id))
+    return rows
+
+
+def due_reminder_tasks(db: Session) -> list[Task]:
+    """Задачі, яким час нагадати. Пауза (hold) нагадувань не отримує."""
+    now = datetime.now(timezone.utc)
+    return [
+        t
+        for t in reminder_tasks(db)
+        if t.next_remind_at is not None
+        and t.status not in (TaskStatus.done, TaskStatus.hold)
+        and to_utc(t.next_remind_at) <= now
+    ]
+
+
+def log_reminder_answer(db: Session, task: Task, summary: str) -> Task:
+    """Дописує «дд.мм.рр: суть» у нотатки і переносить наступне нагадування."""
+    line = f"{datetime.now():%d.%m.%y}: {' '.join(summary.split())}"
+    before = (task.notes or "").rstrip()
+    task.notes = f"{before}\n{line}" if before else line
+    # Закриту задачу не переплановуємо — інакше «готово» саме себе воскресило б.
+    if task.recur_days and task.status != TaskStatus.done:
+        task.next_remind_at = datetime.now(timezone.utc) + timedelta(days=task.recur_days)
+    db.commit()
+    db.refresh(task)
+    return task

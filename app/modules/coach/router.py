@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 
 from . import service
-from .models import GoalCheckin
+from .models import Checkin
 from .schemas import AskResult, BoardOut, CheckinOut, SettingsOut, SettingsUpdate
 
 router = APIRouter(prefix="/api/coach", tags=["coach"])
@@ -41,9 +41,9 @@ def list_checkins(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    stmt = select(GoalCheckin).order_by(GoalCheckin.asked_at.desc()).limit(limit)
+    stmt = select(Checkin).order_by(Checkin.asked_at.desc()).limit(limit)
     if goal_id is not None:
-        stmt = stmt.where(GoalCheckin.goal_id == goal_id)
+        stmt = stmt.where(Checkin.goal_id == goal_id)
     return list(db.scalars(stmt))
 
 

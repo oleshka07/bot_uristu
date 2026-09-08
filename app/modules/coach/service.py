@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.modules.goals.models import ACTIVE_STATUSES, Goal, GoalStatus
 from app.modules.goals.service import active_goals, list_goals
 
-from .models import CoachSettings, GoalCheckin
+from .models import CoachSettings, Checkin
 
 logger = logging.getLogger("networking.coach")
 
@@ -99,9 +99,10 @@ def answered_goal_ids(db: Session, on_day: date) -> set[int]:
     """Цілі, на які власник відповів у вказаний день (локальний час)."""
     start = datetime.combine(on_day, datetime.min.time())
     rows = db.scalars(
-        select(GoalCheckin).where(
-            GoalCheckin.answered_at.is_not(None),
-            GoalCheckin.source == "bot",
+        select(Checkin).where(
+            Checkin.answered_at.is_not(None),
+            Checkin.source == "bot",
+            Checkin.goal_id.is_not(None),
         )
     ).all()
     end = start + timedelta(days=1)
@@ -125,12 +126,12 @@ def _as_local(value: datetime | None) -> datetime | None:
 # ── Відкрита звірка ─────────────────────────────────────────────────────────
 
 
-def pending_checkin(db: Session) -> GoalCheckin | None:
+def pending_checkin(db: Session) -> Checkin | None:
     """Питання, яке зараз чекає на відповідь (і ще не протухло)."""
     row = db.scalars(
-        select(GoalCheckin)
-        .where(GoalCheckin.answered_at.is_(None), GoalCheckin.source == "bot")
-        .order_by(GoalCheckin.asked_at.desc())
+        select(Checkin)
+        .where(Checkin.answered_at.is_(None), Checkin.source == "bot")
+        .order_by(Checkin.asked_at.desc())
         .limit(1)
     ).first()
     if row is None:
@@ -141,13 +142,17 @@ def pending_checkin(db: Session) -> GoalCheckin | None:
     return row
 
 
-def asked_today(db: Session) -> GoalCheckin | None:
-    """Звірка, створена сьогодні — щоб не питати двічі за день."""
+def asked_today(db: Session) -> Checkin | None:
+    """Звірка по цілі, створена сьогодні — щоб не питати двічі за день.
+
+    Нагадування по задачах сюди не рахуються: вони живуть за власним
+    розкладом і не мають закривати питання дня.
+    """
     today = date.today()
     row = db.scalars(
-        select(GoalCheckin)
-        .where(GoalCheckin.source == "bot")
-        .order_by(GoalCheckin.asked_at.desc())
+        select(Checkin)
+        .where(Checkin.source == "bot", Checkin.goal_id.is_not(None))
+        .order_by(Checkin.asked_at.desc())
         .limit(1)
     ).first()
     if row is None:
@@ -156,7 +161,7 @@ def asked_today(db: Session) -> GoalCheckin | None:
     return row if asked and asked.date() == today else None
 
 
-def open_question(db: Session, *, force: bool = False) -> tuple[GoalCheckin, str] | None:
+def open_question(db: Session, *, force: bool = False) -> tuple[Checkin, str] | None:
     """Створює звірку і повертає її разом із текстом питання.
 
     ``None`` — коли питати нема про що: сьогодні вже питали (і це не ``force``)
@@ -180,7 +185,9 @@ def open_question(db: Session, *, force: bool = False) -> tuple[GoalCheckin, str
     if not question:
         question = f"Ціль: {goal.title}. Статус: {goal.status}. Що по ній зараз?"
 
-    checkin = GoalCheckin(goal_id=goal.id, question=question, status_before=goal.status)
+    checkin = Checkin(
+        goal_id=goal.id, question=question, status_before=goal.status, kind="progress"
+    )
     db.add(checkin)
     db.commit()
     db.refresh(checkin)
@@ -198,6 +205,8 @@ def record_answer(db: Session, answer: str) -> str | None:
     checkin = pending_checkin(db)
     if checkin is None:
         return None
+    if checkin.task_id is not None:
+        return _record_task_answer(db, checkin, answer)
     goal = db.get(Goal, checkin.goal_id)
     if goal is None:
         checkin.answered_at = datetime.now(timezone.utc)
@@ -232,7 +241,78 @@ def record_answer(db: Session, answer: str) -> str | None:
     return f"{reply}\n\n({', '.join(tail)})"
 
 
-def mark_nudged(db: Session, checkin: GoalCheckin) -> None:
+def open_task_question(db: Session, task, question: str) -> Checkin:
+    """Звірка по задачі-нагадуванню: «що по ній?»."""
+    checkin = Checkin(task_id=task.id, question=question, kind="progress")
+    db.add(checkin)
+    db.commit()
+    db.refresh(checkin)
+    return checkin
+
+
+def ask_task_frequency(db: Session, task, question: str) -> Checkin:
+    """Уточнення періодичності — окремий вид звірки, з іншою обробкою."""
+    checkin = Checkin(task_id=task.id, question=question, kind="frequency")
+    db.add(checkin)
+    db.commit()
+    db.refresh(checkin)
+    return checkin
+
+
+def _record_task_answer(db: Session, checkin: Checkin, answer: str) -> str:
+    """Відповідь на нагадування по задачі: періодичність або звіт про роботу."""
+    from app.modules.tasks import service as tasks_service
+    from app.modules.tasks.models import Task, TaskStatus
+
+    task = db.get(Task, checkin.task_id)
+    if task is None:
+        checkin.answered_at = datetime.now(timezone.utc)
+        checkin.answer = answer
+        db.commit()
+        return "Задача, про яку було питання, вже видалена."
+
+    checkin.answer = answer
+    checkin.answered_at = datetime.now(timezone.utc)
+
+    if checkin.kind == "frequency":
+        parsed = tasks_service.parse_recur(answer)
+        if parsed is None:
+            # Відповідь не про періодичність — питання лишається відкритим.
+            checkin.answered_at = None
+            db.commit()
+            return (
+                "Не зрозумів періодичність. Скажи як часто нагадувати: "
+                "щодня, раз на тиждень, раз на місяць, раз на квартал."
+            )
+        recur, days = parsed
+        tasks_service.set_recurrence(db, task, recur, days)
+        checkin.summary = f"періодичність: {recur}"
+        db.commit()
+        return (
+            f"Нагадуватиму «{task.title}» {recur}. "
+            f"Наступне: {task.next_remind_at:%d.%m.%y}."
+        )
+
+    low = answer.strip().lower()
+    summary = " ".join(answer.split())[:280]
+    if low in {"готово", "зробив", "зробила", "done", "виконано", "закрив"}:
+        task.status = TaskStatus.done
+        task.next_remind_at = None
+        checkin.status_after = "done"
+        summary = "готово"
+    tasks_service.log_reminder_answer(db, task, summary)
+    if task.status == TaskStatus.done:
+        task.next_remind_at = None
+    checkin.summary = summary[:300]
+    db.commit()
+
+    if task.status == TaskStatus.done:
+        return f"Закрив «{task.title}»."
+    when = f" Наступне нагадування: {task.next_remind_at:%d.%m.%y}." if task.next_remind_at else ""
+    return f"Записав.{when}"
+
+
+def mark_nudged(db: Session, checkin: Checkin) -> None:
     checkin.nudges = (checkin.nudges or 0) + 1
     db.commit()
 
@@ -243,7 +323,7 @@ def log_status_change(db: Session, goal: Goal, before: str, after: str) -> None:
         return
     now = datetime.now(timezone.utc)
     db.add(
-        GoalCheckin(
+        Checkin(
             goal_id=goal.id,
             asked_at=now,
             answered_at=now,
@@ -293,32 +373,32 @@ def board(db: Session) -> dict:
     }
 
 
-def week_changes(db: Session, days: int = 7) -> list[GoalCheckin]:
+def week_changes(db: Session, days: int = 7) -> list[Checkin]:
     """Звірки зі зміною статусу за період — і з бота, і зі сторінки."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return list(
         db.scalars(
-            select(GoalCheckin)
+            select(Checkin)
             .where(
-                GoalCheckin.status_after.is_not(None),
-                GoalCheckin.answered_at >= cutoff,
+                Checkin.status_after.is_not(None),
+                Checkin.answered_at >= cutoff,
             )
-            .order_by(GoalCheckin.answered_at)
+            .order_by(Checkin.answered_at)
         )
     )
 
 
-def week_entries(db: Session, days: int = 7) -> list[GoalCheckin]:
+def week_entries(db: Session, days: int = 7) -> list[Checkin]:
     """Звірки із записом у журнал за період."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return list(
         db.scalars(
-            select(GoalCheckin)
+            select(Checkin)
             .where(
-                GoalCheckin.source == "bot",
-                GoalCheckin.summary.is_not(None),
-                GoalCheckin.answered_at >= cutoff,
+                Checkin.source == "bot",
+                Checkin.summary.is_not(None),
+                Checkin.answered_at >= cutoff,
             )
-            .order_by(GoalCheckin.answered_at)
+            .order_by(Checkin.answered_at)
         )
     )

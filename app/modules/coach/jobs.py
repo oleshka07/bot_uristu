@@ -64,6 +64,31 @@ def send_nudge() -> bool:
     return telegram.send_message(_esc(text))
 
 
+def send_task_reminders() -> bool:
+    """Нагадує про задачу, якій настав час. За раз — рівно одну.
+
+    Кілька відкритих питань одночасно зробили б неоднозначним питання «на що
+    саме він відповів», тож наступна задача почекає до наступної години.
+    """
+    if not _configured():
+        return False
+    from app.modules.automation import telegram
+    from app.modules.tasks import service as tasks_service
+
+    with SessionLocal() as db:
+        if service.pending_checkin(db) is not None:
+            return False
+        due = tasks_service.due_reminder_tasks(db)
+        if not due:
+            return False
+        task = due[0]
+        who = f" · відповідальний: {task.counterpart}" if task.counterpart else ""
+        extra = f"\nЩе чекають: {len(due) - 1}" if len(due) > 1 else ""
+        text = f"Нагадування: {_esc(task.title)}{_esc(who)}\nЩо по ній?{extra}"
+        service.open_task_question(db, task, text)
+    return telegram.send_message(text)
+
+
 def weekly_text(db) -> str:
     """Тижневий зріз: цифри, зміни статусів, записи — і вердикт."""
     from app.modules.insights import ai
@@ -102,6 +127,14 @@ def weekly_text(db) -> str:
             lines.append(f"- {_esc(title)}")
     else:
         lines += ["", "Записів по жодній цілі за тиждень немає."]
+
+    from app.modules.gates import service as gates_service
+
+    gates = gates_service.stale_gates(db)
+    if gates:
+        lines += ["", "Ворота, що висять понад добу:"]
+        for g in gates[:5]:
+            lines.append(f"- {_esc(gates_service.gate_line(db, g))}")
 
     stalled = not changes and not entries
     verdict = ai.coach_week_verdict("\n".join(lines), stalled) or (
@@ -142,5 +175,6 @@ def run_coach_tick() -> None:
             send_question()
         if now.hour == nudge_hour:
             send_nudge()
+        send_task_reminders()
     except Exception as exc:  # pragma: no cover - фонова задача не має падати
         logger.warning("coach tick failed: %s", exc)

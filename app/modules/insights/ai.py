@@ -455,7 +455,7 @@ _ASSISTANT_SCHEMA = {
             "type": "string",
             "enum": [
                 "remind", "note", "cadence", "importance", "calendar",
-                "idea", "none",
+                "idea", "task", "none",
             ],
         },
         "person": {"type": "string"},
@@ -475,10 +475,14 @@ _ASSISTANT_SCHEMA = {
         "end_time": {"type": "string"},    # "HH:MM" 24h, or ""
         "attendee_email": {"type": "string"},
         "google_meet": {"type": "boolean"},
+        # Періодичність задачі-нагадування (action == "task") — СЛОВАМИ, як
+        # сказав власник: «раз на місяць», «щотижня». Порожньо, якщо не сказав.
+        "recurrence": {"type": "string"},
     },
     "required": [
         "action", "person", "text", "due_date", "frequency", "importance",
         "title", "start_time", "end_time", "attendee_email", "google_meet",
+        "recurrence",
     ],
     "additionalProperties": False,
 }
@@ -523,6 +527,12 @@ def parse_assistant_intent(text: str, today: str) -> dict | None:
         "роздуми про продукт/проєкт/можливість). Це НЕ про конкретну людину, "
         "яку він щойно зустрів. Нічого не заповнюй — весь текст збережеться "
         "як є.\n"
+        "• task — завести ЗАДАЧУ-НАГАДУВАННЯ, про яку бот нагадуватиме сам "
+        "(«впиши задачу: оновити прайс, відповідальний Марія, нагадуй раз на "
+        "місяць», «додай задачу платити за домен щороку»). Заповни: text "
+        "(суть задачі без слова «задача»), person (відповідальний, якщо "
+        "названий), recurrence (періодичність СЛОВАМИ, як він сказав; "
+        "порожньо, якщо не сказав).\n"
         "• none — це НЕ команда: питання чи пошук по мережі («хто з моїх "
         "у крипті?», «знайди Марію»), або нотатка про нового знайомого "
         "(«познайомився з Андрієм...»). Став action=none.\n"
@@ -533,7 +543,8 @@ def parse_assistant_intent(text: str, today: str) -> dict | None:
     )
     data = llm.json(system, text.strip(), _ASSISTANT_SCHEMA, max_tokens=400)
     if isinstance(data, dict) and data.get("action") in {
-        "remind", "note", "cadence", "importance", "calendar", "idea", "none",
+        "remind", "note", "cadence", "importance", "calendar", "idea",
+        "task", "none",
     }:
         return data
     return None

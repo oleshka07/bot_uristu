@@ -52,6 +52,12 @@ class Task(Base):
     item_type: Mapped[str | None] = mapped_column(String(40), nullable=True)   # файл/дзвінок…
     counterpart: Mapped[str | None] = mapped_column(String(120), nullable=True)  # для/від кого
     recur: Mapped[str | None] = mapped_column(String(20), nullable=True)       # monthly/weekly
+    # Періодичність нагадувань: словами лежить у `recur`, у днях — тут.
+    # Порожньо означає «періодичність ще не названа» — бот її перепитає.
+    recur_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_remind_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[str | None] = mapped_column(String(300), nullable=True)  # через кому

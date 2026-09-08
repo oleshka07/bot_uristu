@@ -51,6 +51,8 @@ def run() -> None:
             {"command": "due", "description": "Прострочені контакти"},
             {"command": "goals", "description": "Трекер цілей"},
             {"command": "goal", "description": "Питання коуча по цілі"},
+            {"command": "focus", "description": "Топ-3 цілі без руху"},
+            {"command": "week", "description": "Підсумок тижня"},
             {"command": "embed", "description": "Індексувати мережу для пошуку"},
             {"command": "find", "description": "Пошук контакту за іменем"},
             {"command": "timeline", "description": "Історія стосунку"},

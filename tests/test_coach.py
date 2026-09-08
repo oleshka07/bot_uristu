@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.core.database import SessionLocal
 from app.modules.coach import service as coach
-from app.modules.coach.models import GoalCheckin
+from app.modules.coach.models import Checkin
 from app.modules.goals.models import Goal, GoalStatus
 
 
@@ -96,7 +96,7 @@ def test_answer_writes_journal_and_moves_status(client, monkeypatch):
         assert goal.status == "almost"
         assert "статус -> almost" in reply
 
-        checkin = db.query(GoalCheckin).one()
+        checkin = db.query(Checkin).one()
         assert checkin.answered_at is not None
         assert checkin.status_before == "not started"
         assert checkin.status_after == "almost"

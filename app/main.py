@@ -21,6 +21,7 @@ from .modules.admin.router import router as admin_router
 from .modules.coach.router import router as coach_router
 from .modules.contacts.router import router as contacts_router
 from .modules.dashboard.router import router as dashboard_router
+from .modules.gates.router import router as gates_router
 from .modules.goals.router import router as goals_router
 from .modules.insights.router import router as insights_router
 from .modules.integrations.router import router as integrations_router
@@ -89,6 +90,7 @@ app.include_router(projects_router)
 app.include_router(ideas_router)
 app.include_router(resources_router)
 app.include_router(coach_router)
+app.include_router(gates_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

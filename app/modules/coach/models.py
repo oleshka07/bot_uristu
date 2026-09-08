@@ -1,9 +1,13 @@
-"""Моделі коуча: журнал звірок по цілях і налаштування розкладу.
+"""Моделі коуча: журнал звірок і налаштування розкладу.
 
-Журнал (``GoalCheckin``) — це і памʼять бота (яке питання висить без
-відповіді), і історія прогресу для сторінки та тижневого підсумку. Окремого
-сховища «яку ціль питали сьогодні» не тримаємо: відкрита звірка — це рядок
-без ``answered_at``.
+Журнал (``Checkin``) — це і памʼять бота (яке питання висить без відповіді),
+і історія прогресу для сторінки та тижневого підсумку. Окремого сховища
+«що питали сьогодні» не тримаємо: відкрита звірка — це рядок без
+``answered_at``.
+
+Звірка стосується або цілі, або задачі-нагадування — рівно одного з двох.
+Один механізм на обидва випадки навмисно: інакше довелося б розрізняти два
+конкуруючі «відкриті питання» і вгадувати, на яке з них відповів власник.
 """
 
 from __future__ import annotations
@@ -16,13 +20,18 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, utcnow
 
 
-class GoalCheckin(Base):
-    __tablename__ = "goal_checkins"
+class Checkin(Base):
+    __tablename__ = "checkins"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    goal_id: Mapped[int] = mapped_column(
-        ForeignKey("goals.id", ondelete="CASCADE"), index=True
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # "progress" — що по цілі/задачі; "frequency" — уточнюємо періодичність.
+    kind: Mapped[str] = mapped_column(String(20), default="progress")
 
     asked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
@@ -44,7 +53,8 @@ class GoalCheckin(Base):
     # Скільки разів нагадували — щоб не колоти двічі за вечір.
     nudges: Mapped[int] = mapped_column(Integer, default=0)
 
-    goal: Mapped["Goal"] = relationship()  # noqa: F821
+    goal: Mapped["Goal | None"] = relationship()  # noqa: F821
+    task: Mapped["Task | None"] = relationship()  # noqa: F821
 
 
 class CoachSettings(Base):
