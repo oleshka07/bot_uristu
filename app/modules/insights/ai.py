@@ -1056,3 +1056,89 @@ def coach_week_verdict(block: str, stalled: bool) -> str | None:
         + " Два-три речення."
     )
     return _strip_emoji(_clean(llm.text(system, block, max_tokens=260)))
+
+
+# ── Пошта: класифікація і чернетки ──────────────────────────────────────────
+
+_EMAIL_TRIAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "needs_reply": {
+            "type": "boolean",
+            "description": (
+                "true, якщо лист чекає на відповідь чи дію власника. "
+                "Розсилки, сповіщення сервісів, автовідповіді, рахунки без "
+                "питань, підтвердження — false."
+            ),
+        },
+        "urgency": {"type": "string", "enum": ["high", "normal", "low"]},
+        "topic": {
+            "type": "string",
+            "description": "Про що лист і чого від мене хочуть, 5-12 слів.",
+        },
+    },
+    "required": ["needs_reply", "urgency", "topic"],
+}
+
+
+def triage_email(subject: str, sender: str, body: str) -> dict | None:
+    """Чи чекає лист відповіді, наскільки терміново і про що він.
+
+    ``None`` — коли AI недоступний; викликач тоді лишає тред некласифікованим
+    і показує його як є, а не вгадує.
+    """
+    if not llm.enabled():
+        return None
+    system = (
+        "Ти розбираєш вхідну пошту власника і вирішуєш, що з неї потребує "
+        "його відповіді. Будь суворим: більшість листів відповіді не "
+        "потребують. high — коли є дедлайн, чекають на рішення або людина "
+        "чекає вже не перший день. Respond with JSON only."
+    )
+    user = f"Від: {sender}\nТема: {subject}\n\n{(body or '')[:4000]}"
+    data = llm.json(system, user, _EMAIL_TRIAGE_SCHEMA, max_tokens=300)
+    if not isinstance(data, dict):
+        return None
+    urgency = str(data.get("urgency") or "normal").lower()
+    return {
+        "needs_reply": bool(data.get("needs_reply")),
+        "urgency": urgency if urgency in {"high", "normal", "low"} else "normal",
+        "topic": _strip_emoji(str(data.get("topic") or ""))[:300],
+    }
+
+
+def draft_email_reply(
+    subject: str,
+    sender: str,
+    body: str,
+    contact: models.Contact | None = None,
+) -> str | None:
+    """Чернетка відповіді на лист — голосом власника, готова до відправки.
+
+    Якщо відправник є в базі, підмішуємо його досьє й приклади стилю: та сама
+    механіка, що й для чернеток у Telegram.
+    """
+    if not llm.enabled():
+        return None
+    system = (
+        "Ти пишеш відповіді на email ВІД ІМЕНІ власника (Степана).\n"
+        "ПРАВИЛА (суворо):\n"
+        "1) Мова: тією ж мовою, що й лист, на який відповідаєш.\n"
+        "2) БЕЗ емодзі.\n"
+        "3) По суті: відповідай на поставлені питання конкретно. Без лестощів, "
+        "без води, без канцеляриту й формальних розшаркувань.\n"
+        "4) Діловий, але живий тон. Коротко: стільки речень, скільки треба, "
+        "і жодного зайвого.\n"
+        "5) Якщо для відповіді бракує інформації — прямо напиши, чого саме "
+        "бракує, замість того щоб вигадувати.\n"
+        "6) Верни ЛИШЕ текст листа, без теми, без лапок і без пояснень."
+    )
+    parts = []
+    if contact is not None:
+        parts.append(_contact_context(contact))
+        style = _style_context(contact)
+        if style:
+            parts.append(style)
+    parts.append(f"Лист від {sender}\nТема: {subject}\n\n{(body or '')[:5000]}")
+    raw = llm.text(system, "\n\n".join(parts), max_tokens=800)
+    return _clean(_strip_emoji(raw)) if raw else None

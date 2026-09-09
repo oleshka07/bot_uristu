@@ -22,6 +22,7 @@ from app.modules.insights.models import (  # noqa: F401
     StyleProfile,
 )
 from app.modules.coach.models import CoachSettings, Checkin  # noqa: F401
+from app.modules.inbox.models import EmailThread  # noqa: F401
 from app.modules.goals.models import (  # noqa: F401
     ACTIVE_STATUSES,
     Area,

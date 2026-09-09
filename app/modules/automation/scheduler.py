@@ -60,6 +60,17 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+    # Пошта: раз на годину тягнемо нове, класифікуємо і пишемо чернетки.
+    from app.modules.inbox.service import run_sync as run_inbox_sync
+
+    _scheduler.add_job(
+        run_inbox_sync,
+        "cron",
+        minute=25,
+        id="inbox_sync",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 

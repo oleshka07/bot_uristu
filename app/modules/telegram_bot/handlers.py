@@ -510,6 +510,10 @@ def handle_callback(client, cb: dict) -> None:
         )
         return
 
+    if data.startswith("m:"):
+        _handle_mail_callback(client, cb_id, data, admin)
+        return
+
     if not data.startswith("d:"):
         client.answer_callback(cb_id)
         return
@@ -1585,6 +1589,84 @@ def _handle_task_capture(client, admin: int, intent: dict, text: str) -> bool:
     return True
 
 
+
+_MAIL_URGENCY = {"high": "терміново", "normal": "звичайне", "low": "може почекати"}
+
+
+def _mail_keyboard(thread_pk: int, has_draft: bool) -> dict:
+    row = []
+    if has_draft:
+        row.append({"text": "Надіслати", "callback_data": f"m:s:{thread_pk}"})
+        row.append({"text": "Переписати", "callback_data": f"m:d:{thread_pk}"})
+    else:
+        row.append({"text": "Скласти чернетку", "callback_data": f"m:d:{thread_pk}"})
+    row.append({"text": "Пропустити", "callback_data": f"m:x:{thread_pk}"})
+    return {"inline_keyboard": [row]}
+
+
+def _mail_card(client, admin: int, db, thread) -> None:
+    """Один лист із чернеткою і кнопками."""
+    from app.modules.inbox import service as inbox
+
+    who = thread.from_name or thread.from_email
+    days = inbox.age_days(thread)
+    age = "сьогодні" if days == 0 else f"{days} дн тому"
+    lines = [
+        f"<b>{_esc(thread.subject)}</b>",
+        f"від {_esc(who)} · {age} · {_MAIL_URGENCY.get(thread.urgency, thread.urgency)}",
+    ]
+    if thread.topic:
+        lines.append(_esc(thread.topic))
+    if thread.draft_text:
+        lines += ["", "<b>Чернетка:</b>", _esc(thread.draft_text)]
+        if thread.draft_id:
+            lines.append("")
+            lines.append("Вона вже лежить у чернетках Gmail.")
+    else:
+        lines += ["", _esc((thread.snippet or "")[:400])]
+    client.send_message(
+        admin, "\n".join(lines), reply_markup=_mail_keyboard(thread.id, bool(thread.draft_text))
+    )
+
+
+def _handle_mail_callback(client, cb_id: str, data: str, admin: int | None) -> None:
+    from app.modules.inbox import service as inbox
+
+    parts = data.split(":")
+    try:
+        action, thread_pk = parts[1], int(parts[2])
+    except (IndexError, ValueError):
+        client.answer_callback(cb_id)
+        return
+
+    with SessionLocal() as db:
+        thread = inbox.get(db, thread_pk)
+        if thread is None:
+            client.answer_callback(cb_id, "Листа вже немає")
+            return
+
+        if action == "x":
+            inbox.set_status(db, thread, "ignored")
+            client.answer_callback(cb_id, "Прибрав з черги")
+            return
+
+        if action == "d":
+            client.answer_callback(cb_id, "Пишу чернетку...")
+            thread = inbox.make_draft(db, thread)
+            if not thread.draft_text:
+                client.send_message(admin, "Не вдалося скласти чернетку.")
+                return
+            _mail_card(client, admin, db, thread)
+            return
+
+        if action == "s":
+            if not thread.draft_text:
+                client.answer_callback(cb_id, "Немає чернетки")
+                return
+            sent = inbox.send_reply(db, thread)
+        client.answer_callback(cb_id, "Надіслано" if sent else "Не вдалося надіслати")
+
+
 def _handle_assistant_intent(client, admin: int, text: str) -> bool:
     """Nexus-style: interpret a free-text message as a command over a contact
     (reminder / note / cadence / importance) and act on it. Returns True when
@@ -1886,6 +1968,8 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/goal — питання коуча по одній цілі просто зараз\n"
                 "/focus — топ-3 найважливіші цілі без руху\n"
                 "/week — підсумок тижня просто зараз\n"
+                "/inbox — пошта, що чекає на відповідь\n"
+                "/mail &lt;№&gt; — лист із готовою чернеткою\n"
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
@@ -2098,6 +2182,38 @@ def _handle_command(client, admin: int, text: str) -> None:
             from app.modules.coach.jobs import weekly_text
 
             client.send_message(admin, weekly_text(db))
+        elif cmd in ("inbox", "mail", "email"):
+            from app.modules.inbox import service as inbox
+
+            if arg.strip().isdigit():
+                thread = inbox.get(db, int(arg.strip()))
+                if thread is None:
+                    client.send_message(admin, "Такого листа немає в черзі.")
+                    return
+                _mail_card(client, admin, db, thread)
+                return
+            rows = inbox.waiting(db)
+            if not rows:
+                client.send_message(admin, "Пошта розібрана — нічого не чекає.")
+                return
+            st = inbox.stats(db)
+            lines = [
+                f"📬 <b>Чекають відповіді: {st['waiting']}</b>"
+                + (f" · термінових {st['urgent']}" if st["urgent"] else "")
+            ]
+            for t in rows[:8]:
+                days = inbox.age_days(t)
+                age = "сьогодні" if days == 0 else f"{days} дн"
+                mark = "!" if t.urgency == "high" else "·"
+                draft = " ✍" if t.draft_text else ""
+                who = t.from_name or t.from_email
+                lines.append(
+                    f"{mark} <code>{t.id}</code> {_esc(who)} — "
+                    f"{_esc(t.topic or t.subject)} ({age}){draft}"
+                )
+            lines.append("")
+            lines.append("<code>/mail &lt;номер&gt;</code> — відкрити з чернеткою")
+            client.send_message(admin, "\n".join(lines))
         elif cmd == "overdue":
             _handle_command(client, admin, "/due")
         elif cmd in ("today", "network", "digest", "weekly", "monthly"):

@@ -35,6 +35,9 @@ logger = logging.getLogger("networking.google")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
+    # gmail.compose — створення чернеток у Gmail. gmail.send сам по собі
+    # цього не дозволяє, тож після додавання скоупу Google треба перепідключити.
+    "https://www.googleapis.com/auth/gmail.compose",
     # calendar.events = create/update events (needed to add meetings from
     # natural language). We also keep calendar.readonly: Google returns it
     # among previously-granted scopes (include_granted_scopes), and the
@@ -536,7 +539,15 @@ def create_event(
 # ── Outbound email (for the daily digest) ────────────────────────────────────
 
 
-def send_email(db: Session, to: str, subject: str, body_html: str) -> bool:
+def send_email(
+    db: Session,
+    to: str,
+    subject: str,
+    body_html: str,
+    *,
+    thread_id: str | None = None,
+    plain: bool = False,
+) -> bool:
     creds = _load_credentials(db)
     if creds is None:
         return False
@@ -544,11 +555,15 @@ def send_email(db: Session, to: str, subject: str, body_html: str) -> bool:
         from googleapiclient.discovery import build
 
         gmail = build("gmail", "v1", credentials=creds, cache_discovery=False)
-        message = MIMEText(body_html, "html", "utf-8")
+        message = MIMEText(body_html, "plain" if plain else "html", "utf-8")
         message["to"] = to
         message["subject"] = subject
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
+        body: dict = {"raw": raw}
+        if thread_id:
+            # Тримає відповідь у тому ж тредi, а не окремим листом.
+            body["threadId"] = thread_id
+        gmail.users().messages().send(userId="me", body=body).execute()
         return True
     except Exception as exc:  # pragma: no cover
         logger.warning("send_email failed: %s", exc)
@@ -588,4 +603,158 @@ def _event_end(event: dict) -> datetime | None:
             return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
+        return None
+
+
+# ── Інбокс: треди, тіла листів і чернетки ───────────────────────────────────
+
+#: Що вважаємо «поштою, яка може вимагати відповіді»: тільки вхідна папка,
+#: без промо, соцмереж і розсилок — інакше черга захлинеться шумом.
+INBOX_QUERY = (
+    "in:inbox -category:promotions -category:social -category:forums "
+    "-category:updates"
+)
+
+
+def _gmail(db: Session):
+    creds = _load_credentials(db)
+    if creds is None:
+        return None
+    from googleapiclient.discovery import build
+
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def _decode(data: str | None) -> str:
+    if not data:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(data.encode()).decode("utf-8", "replace")
+    except Exception:  # pragma: no cover - зіпсоване кодування не має валити синк
+        return ""
+
+
+def _body_text(payload: dict) -> str:
+    """Текст листа: спершу text/plain, інакше html без тегів."""
+    import re
+
+    plain, html = "", ""
+    stack = [payload or {}]
+    while stack:
+        part = stack.pop()
+        mime = part.get("mimeType", "")
+        data = part.get("body", {}).get("data")
+        if mime == "text/plain" and data and not plain:
+            plain = _decode(data)
+        elif mime == "text/html" and data and not html:
+            html = _decode(data)
+        stack.extend(part.get("parts") or [])
+    if plain:
+        return plain
+    if html:
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"[ \t]+", " ", text)
+    return ""
+
+
+def _headers(message: dict) -> dict:
+    return {
+        h["name"].lower(): h["value"]
+        for h in message.get("payload", {}).get("headers", [])
+    }
+
+
+def fetch_inbox_threads(db: Session, *, days: int = 14, limit: int = 60) -> list[dict]:
+    """Треди вхідної пошти за період, кожен — зведений до того, що нам потрібно.
+
+    Повертає список словників; порожній — якщо Google не підключений. Мережеві
+    збої не піднімаються вище: пропущений синк не має валити планувальник.
+    """
+    gmail = _gmail(db)
+    if gmail is None:
+        return []
+    me = (status(db).get("account_email") or "").lower()
+
+    try:
+        listed = (
+            gmail.users()
+            .threads()
+            .list(
+                userId="me",
+                q=f"{INBOX_QUERY} newer_than:{days}d",
+                maxResults=limit,
+            )
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("inbox list failed: %s", exc)
+        return []
+
+    out: list[dict] = []
+    for ref in listed.get("threads", []):
+        try:
+            thread = (
+                gmail.users()
+                .threads()
+                .get(userId="me", id=ref["id"], format="full")
+                .execute()
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("inbox thread %s failed: %s", ref["id"], exc)
+            continue
+
+        messages = thread.get("messages") or []
+        if not messages:
+            continue
+        last = messages[-1]
+        head = _headers(last)
+        first_head = _headers(messages[0])
+        from_name, from_email = parseaddr(head.get("from", ""))
+        from_email = from_email.lower()
+
+        out.append(
+            {
+                "thread_id": thread.get("id"),
+                "message_id": last.get("id"),
+                "subject": first_head.get("subject") or head.get("subject") or "(без теми)",
+                "from_email": from_email,
+                "from_name": from_name or from_email,
+                "snippet": (last.get("snippet") or "").strip(),
+                "body": _body_text(last.get("payload") or {})[:8000],
+                "last_at": _epoch_ms_to_dt(last.get("internalDate")),
+                # Останнє слово за мною = тред уже відпрацьований.
+                "last_from_me": bool(me and me in from_email),
+                "messages": len(messages),
+            }
+        )
+    return out
+
+
+def create_draft(db: Session, *, thread_id: str, to: str, subject: str, body: str) -> str | None:
+    """Кладе чернетку відповіді у Gmail, у той самий тред. Повертає id чернетки.
+
+    ``None`` означає, що чернетку створити не вдалося — найчастіше тому, що
+    токен виданий без скоупу gmail.compose (треба перепідключити Google).
+    """
+    gmail = _gmail(db)
+    if gmail is None:
+        return None
+    message = MIMEText(body, "plain", "utf-8")
+    message["to"] = to
+    message["subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    try:
+        created = (
+            gmail.users()
+            .drafts()
+            .create(
+                userId="me",
+                body={"message": {"raw": raw, "threadId": thread_id}},
+            )
+            .execute()
+        )
+        return created.get("id")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("create_draft failed: %s", exc)
         return None

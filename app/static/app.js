@@ -81,6 +81,7 @@ function setView(view) {
     b.classList.toggle("active", b.dataset.view === view));
   if (view === "dashboard") renderDashboard();
   else if (view === "tasks") renderTasks();
+  else if (view === "inbox") renderInbox();
   else if (view === "contacts") renderContacts();
   else if (view === "goals") renderGoals();
   else if (view === "integrations") renderIntegrations();
@@ -625,6 +626,81 @@ function confirmDelete(c) {
   });
 }
 
+
+/* ── Пошта ─────────────────────────────────────────────────────────────── */
+const MAIL_URGENCY = { high: "терміново", normal: "звичайне", low: "може почекати" };
+
+async function renderInbox() {
+  const main = $("#main");
+  main.innerHTML = `<div class="view-head"><h2>Пошта</h2>
+    <button class="btn" id="inbox-sync">Синхронізувати</button></div>
+    <div id="inbox-body" class="empty"><span class="spinner"></span> Завантаження…</div>`;
+  $("#inbox-sync").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = "Читаю пошту…";
+    try { const r = await api("/inbox/sync", { method: "POST" });
+      toast(`Тредів: ${r.fetched}, нових: ${r.added}, чернеток: ${r.drafted}`); renderInbox(); }
+    catch (err) { toast(err.message, true); renderInbox(); }
+  });
+
+  let threads, stats;
+  try {
+    [threads, stats] = await Promise.all([api("/inbox"), api("/inbox/stats")]);
+  } catch (e) { return showError(e); }
+
+  if (!threads.length) {
+    $("#inbox-body").innerHTML = `<div class="empty">Пошта розібрана — нічого не чекає на відповідь.</div>`;
+    return;
+  }
+
+  const cards = threads.map((t) => `
+    <div class="card mb" data-thread="${t.id}">
+      <div class="flex between">
+        <div>
+          <h3 class="section-title" style="margin:0">${esc(t.subject)}</h3>
+          <div class="muted">${esc(t.from_name || t.from_email)}
+            · ${t.age_days === 0 ? "сьогодні" : t.age_days + " дн"}
+            · ${esc(MAIL_URGENCY[t.urgency] || t.urgency)}
+            ${t.contact_name ? " · " + esc(t.contact_name) : ""}
+            ${t.in_gmail ? " · у чернетках Gmail" : ""}</div>
+        </div>
+        <div class="flex" style="gap:6px">
+          ${t.draft_text ? `<button class="btn small primary" data-send="${t.id}">Надіслати</button>` : ""}
+          <button class="btn small" data-draft="${t.id}">${t.draft_text ? "Переписати" : "Чернетка"}</button>
+          <button class="btn small" data-skip="${t.id}">Пропустити</button>
+        </div>
+      </div>
+      ${t.topic ? `<p class="muted">${esc(t.topic)}</p>` : ""}
+      ${t.draft_text
+        ? `<div class="card" style="background:var(--panel-2)"><pre class="draft">${esc(t.draft_text)}</pre></div>`
+        : `<p class="muted">${esc(t.snippet || "")}</p>`}
+    </div>`).join("");
+
+  $("#inbox-body").className = "";
+  $("#inbox-body").innerHTML = `
+    <div class="grid stats-grid">
+      <div class="card stat"><div class="label">Чекають</div><div class="value">${stats.waiting}</div></div>
+      <div class="card stat"><div class="label">Термінові</div><div class="value">${stats.urgent}</div></div>
+      <div class="card stat"><div class="label">Понад 2 дні</div><div class="value">${stats.stale}</div></div>
+      <div class="card stat"><div class="label">З чернеткою</div><div class="value">${stats.drafted}</div></div>
+    </div>${cards}`;
+
+  main.querySelectorAll("[data-draft]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "Пишу…";
+    try { await api(`/inbox/${b.dataset.draft}/draft`, { method: "POST" }); renderInbox(); }
+    catch (e) { toast(e.message, true); renderInbox(); }
+  }));
+  main.querySelectorAll("[data-skip]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/inbox/${b.dataset.skip}`, { method: "PATCH", body: JSON.stringify({ status: "ignored" }) });
+      renderInbox(); } catch (e) { toast(e.message, true); }
+  }));
+  main.querySelectorAll("[data-send]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Надіслати цю відповідь?")) return;
+    b.disabled = true;
+    try { await api(`/inbox/${b.dataset.send}/send`, { method: "POST" }); toast("Надіслано"); renderInbox(); }
+    catch (e) { toast(e.message, true); renderInbox(); }
+  }));
+}
 
 /* ── Goals (трекер цілей) ─────────────────────────────────── */
 const GOAL_STATUSES = ["not started", "in progress", "almost", "done", "cancelled",

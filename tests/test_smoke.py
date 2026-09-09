@@ -29,6 +29,7 @@ EXPECTED_TABLES = {
     "resources",
     "checkins",
     "coach_settings",
+    "email_threads",
 }
 
 EXPECTED_ROUTES = {
@@ -113,6 +114,12 @@ EXPECTED_ROUTES = {
     ("POST", "/api/gates"),
     ("POST", "/api/gates/nudge"),
     ("POST", "/api/gates/{uid}/done"),
+    ("GET", "/api/inbox"),
+    ("GET", "/api/inbox/stats"),
+    ("POST", "/api/inbox/sync"),
+    ("POST", "/api/inbox/{thread_pk}/draft"),
+    ("POST", "/api/inbox/{thread_pk}/send"),
+    ("PATCH", "/api/inbox/{thread_pk}"),
 }
 
 

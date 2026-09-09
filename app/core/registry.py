@@ -20,6 +20,7 @@ from app.modules.integrations.social import models as social_models  # noqa: F40
 from app.modules.interactions import models as interactions_models  # noqa: F401
 from app.modules.goals import models as goals_models  # noqa: F401
 from app.modules.ideas import models as ideas_models  # noqa: F401
+from app.modules.inbox import models as inbox_models  # noqa: F401
 from app.modules.projects import models as projects_models  # noqa: F401
 from app.modules.resources import models as resources_models  # noqa: F401
 from app.modules.search import models as search_models  # noqa: F401
@@ -43,4 +44,5 @@ __all__ = [
     "ideas_models",
     "resources_models",
     "coach_models",
+    "inbox_models",
 ]
