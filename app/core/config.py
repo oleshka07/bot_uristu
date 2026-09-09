@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     google_client_secret: str | None = None
     google_redirect_uri: str = "http://localhost:8000/api/integrations/google/callback"
     # How many days back to pull emails / calendar events when syncing.
+    # Консолідація памʼяті: після скількох нових взаємодій переписувати досьє
+    # й витягати факти, скільки контактів обробляти за один прохід, і через
+    # скільки днів досьє вважати застарілим, якщо була хоч одна зміна.
+    consolidate_every: int = 5
+    consolidate_max_per_run: int = 15
+    consolidate_stale_days: int = 30
     google_tasklist_title: str = "Networking AI"
     sync_window_days: int = 120
 

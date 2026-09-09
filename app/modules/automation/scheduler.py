@@ -82,6 +82,17 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+    # Памʼять про людей: досьє й факти переписуються самі, коли назбиралось нове.
+    from app.modules.insights.service import run_consolidation
+
+    _scheduler.add_job(
+        run_consolidation,
+        "cron",
+        minute=35,
+        id="memory_consolidation",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 

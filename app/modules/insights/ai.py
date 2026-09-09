@@ -50,6 +50,11 @@ def _strip_emoji(out: str | None) -> str | None:
 def _contact_context(contact: models.Contact) -> str:
     """A compact, AI-readable digest of everything known about a contact."""
     lines: list[str] = []
+    # Досьє — першим: це скочене резюме всієї історії, найщільніший шар памʼяті.
+    # Без нього модель бачила б лише останні кілька реплік і сирі поля.
+    if contact.ai_dossier:
+        lines.append(f"Dossier (consolidated memory):\n{contact.ai_dossier.strip()}")
+        lines.append("")
     lines.append(f"Name: {contact.full_name}")
     lines.append(f"Relationship: {contact.relationship_type.value}")
     lines.append(f"Desired contact cadence: {contact.contact_frequency.value}")

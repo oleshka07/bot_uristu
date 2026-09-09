@@ -149,3 +149,131 @@ def invalidate_fact(db: Session, fact: ContactFact) -> ContactFact:
         db.commit()
         db.refresh(fact)
     return fact
+
+
+# ── Консолідація памʼяті: епізоди -> досьє + факти ──────────────────────────
+#
+# Три рівні памʼяті по контакту: сирі взаємодії (interactions), скочене досьє
+# (Contact.ai_dossier) і факти з вікном валідності (contact_facts). Перший
+# рівень наповнюється сам, два інші — лише тут. Без цієї джоби досьє й факти
+# існували б тільки для контактів, де власник натиснув кнопку руками.
+
+
+def record_facts(db: Session, contact: Contact, detected: list[dict]) -> list[ContactFact]:
+    """Кладе витягнуті моделлю факти через add_fact (дедуп + витіснення)."""
+    saved: list[ContactFact] = []
+    for f in detected:
+        raw_type = str(f.get("fact_type") or "other").lower()
+        try:
+            fact_type = FactType(raw_type)
+        except ValueError:
+            fact_type = FactType.other
+        value = str(f.get("value") or "").strip()
+        if not value:
+            continue
+        saved.append(
+            add_fact(
+                db,
+                contact,
+                fact_type=fact_type,
+                value=value,
+                confidence=_confidence(f.get("confidence")),
+                source="ai",
+            )
+        )
+    return saved
+
+
+def _confidence(raw) -> float:
+    mapping = {"low": 0.4, "medium": 0.7, "high": 0.9}
+    if isinstance(raw, (int, float)):
+        return max(0.0, min(1.0, float(raw)))
+    return mapping.get(str(raw).lower(), 0.7)
+
+
+def extract_and_record_facts(db: Session, contact: Contact) -> list[ContactFact]:
+    """Прогін моделі по історії контакту + запис фактів. Ідемпотентно."""
+    from app.modules.insights import ai
+
+    return record_facts(db, contact, ai.extract_facts(contact))
+
+
+def consolidate_contact(db: Session, contact: Contact) -> dict:
+    """Переписує досьє і витягає факти з усієї історії контакту.
+
+    Повертає, що змінилося. Якщо AI недоступний — не чіпає ні досьє, ні
+    лічильник: інакше контакт вважався б консолідованим, не будучи таким.
+    """
+    from app.modules.insights import ai
+
+    if not ai.llm.enabled():
+        return {"skipped": "ai unavailable"}
+
+    dossier = ai.generate_dossier(contact)
+    facts = extract_and_record_facts(db, contact)
+
+    contact.ai_dossier = dossier
+    contact.ai_dossier_updated_at = datetime.now(timezone.utc)
+    contact.consolidated_count = len(contact.interactions)
+    db.commit()
+    db.refresh(contact)
+    return {"dossier": bool(dossier), "facts": len(facts)}
+
+
+def due_for_consolidation(db: Session, *, limit: int | None = None) -> list[Contact]:
+    """Контакти, чия памʼять відстала від історії.
+
+    Дві умови, кожної досить: назбиралося N нових взаємодій із минулого
+    разу, або досьє старше за stale_days і хоч щось із того часу змінилося.
+    Найбільш «відсталі» — першими, щоб ліміт на прохід витрачався з користю.
+    """
+    from datetime import timedelta
+
+    from app.core.config import settings
+
+    every = max(1, settings.consolidate_every)
+    stale_after = timedelta(days=settings.consolidate_stale_days)
+    now = datetime.now(timezone.utc)
+
+    due: list[tuple[int, Contact]] = []
+    for contact in db.scalars(select(Contact)):
+        total = len(contact.interactions)
+        fresh = total - (contact.consolidated_count or 0)
+        if fresh <= 0:
+            continue
+        updated = contact.ai_dossier_updated_at
+        if updated is not None and updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        stale = updated is None or now - updated > stale_after
+        if fresh >= every or stale:
+            due.append((fresh, contact))
+
+    due.sort(key=lambda pair: (-pair[0], pair[1].id))
+    contacts = [c for _, c in due]
+    return contacts[:limit] if limit else contacts
+
+
+def run_consolidation() -> dict:
+    """Фонова джоба: консолідує контакти пачкою, кожен — у своєму try."""
+    import logging
+
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+
+    logger = logging.getLogger("networking.consolidation")
+    report = {"consolidated": 0, "facts": 0, "failed": 0, "due": 0}
+    with SessionLocal() as db:
+        contacts = due_for_consolidation(db, limit=settings.consolidate_max_per_run)
+        report["due"] = len(due_for_consolidation(db))
+        for contact in contacts:
+            try:
+                result = consolidate_contact(db, contact)
+                if result.get("skipped"):
+                    break  # без AI далі йти нема сенсу
+                report["consolidated"] += 1
+                report["facts"] += result.get("facts", 0)
+            except Exception as exc:  # pragma: no cover - один контакт не спиняє решту
+                db.rollback()
+                report["failed"] += 1
+                logger.warning("consolidation of contact %s failed: %s", contact.id, exc)
+    return report

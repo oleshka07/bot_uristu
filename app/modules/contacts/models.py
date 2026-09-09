@@ -157,6 +157,10 @@ class Contact(Base):
     ai_dossier_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Скільки взаємодій було на момент останньої консолідації памʼяті.
+    # Лічильник, а не час: підтягнуті заднім числом листи мають старий
+    # occurred_at і за часом «новими» не виглядали б.
+    consolidated_count: Mapped[int] = mapped_column(default=0)
 
     # Relationships (string-based → no imports of sibling modules)
     tags: Mapped[list[Tag]] = relationship(

@@ -56,6 +56,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "style_examples": "TEXT",
         "importance": "INTEGER DEFAULT 0",
         "auto_reply_paused": "BOOLEAN DEFAULT FALSE",
+        "consolidated_count": "INTEGER DEFAULT 0",
     },
 }
 

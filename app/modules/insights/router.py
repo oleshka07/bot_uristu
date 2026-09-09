@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -44,10 +43,8 @@ def generate_dossier(contact_id: int, db: Session = Depends(get_db)):
     contact = crud.get_contact(db, contact_id)
     if contact is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Contact not found")
-    contact.ai_dossier = ai.generate_dossier(contact)
-    contact.ai_dossier_updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(contact)
+    # Кнопка і фонова джоба йдуть одним шляхом: досьє + факти + лічильник.
+    insights_service.consolidate_contact(db, contact)
     return schemas.ContactDetail.from_model(contact)
 
 
@@ -122,24 +119,7 @@ def extract_facts(contact_id: int, db: Session = Depends(get_db)):
     Idempotent: already-known facts are skipped, and single-valued facts
     (role/employer/location) supersede older ones instead of duplicating."""
     contact = _get_contact_or_404(db, contact_id)
-    detected = ai.extract_facts(contact)
-    saved = []
-    for f in detected:
-        try:
-            fact_type = schemas_fact_type(f.get("fact_type"))
-        except ValueError:
-            continue
-        saved.append(
-            insights_service.add_fact(
-                db,
-                contact,
-                fact_type=fact_type,
-                value=f.get("value", "").strip(),
-                confidence=_confidence_to_float(f.get("confidence")),
-                source="ai",
-            )
-        )
-    return saved
+    return insights_service.extract_and_record_facts(db, contact)
 
 
 @router.patch("/facts/{fact_id}", response_model=ContactFactOut)
@@ -154,18 +134,3 @@ def update_fact(
 def invalidate_fact(fact_id: int, db: Session = Depends(get_db)):
     fact = _get_fact_or_404(db, fact_id)
     return insights_service.invalidate_fact(db, fact)
-
-
-def schemas_fact_type(raw):
-    from app.modules.insights.models import FactType
-
-    if not raw:
-        return FactType.other
-    return FactType(str(raw).lower())
-
-
-def _confidence_to_float(raw) -> float:
-    mapping = {"low": 0.4, "medium": 0.7, "high": 0.9}
-    if isinstance(raw, (int, float)):
-        return max(0.0, min(1.0, float(raw)))
-    return mapping.get(str(raw).lower(), 0.7)
