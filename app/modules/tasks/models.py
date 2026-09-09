@@ -68,6 +68,16 @@ class Task(Base):
     goal_id: Mapped[int | None] = mapped_column(
         ForeignKey("goals.id", ondelete="SET NULL"), nullable=True
     )
+    # Дзеркало в Google Tasks: id рядка там і коли востаннє звіряли.
+    google_task_id: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, index=True
+    )
+    google_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Вимикається, коли задачу видалили в Google — щоб ми не пхали її назад.
+    google_sync: Mapped[bool] = mapped_column(default=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

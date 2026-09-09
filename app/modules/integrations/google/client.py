@@ -44,6 +44,9 @@ SCOPES = [
     # requested set must match the granted set or oauthlib rejects the token.
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.readonly",
+    # tasks — задачі, які видно всередині Google Календаря і в застосунку
+    # Google Tasks. Старий токен цього скоупу не має: треба перепідключитися.
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
@@ -758,3 +761,127 @@ def create_draft(db: Session, *, thread_id: str, to: str, subject: str, body: st
     except Exception as exc:  # pragma: no cover
         logger.warning("create_draft failed: %s", exc)
         return None
+
+
+# ── Google Tasks: задачі, видимі всередині Календаря ────────────────────────
+
+# Id списку задач змінюється рідко; тримаємо в памʼяті ізолята, щоб не питати
+# Google на кожен синк.
+_tasklist_cache: dict[str, str] = {}
+
+
+def _tasks_api(db: Session):
+    creds = _load_credentials(db)
+    if creds is None:
+        return None
+    from googleapiclient.discovery import build
+
+    return build("tasks", "v1", credentials=creds, cache_discovery=False)
+
+
+def ensure_tasklist(db: Session, title: str | None = None) -> str | None:
+    """Знаходить (або створює) окремий список задач і повертає його id.
+
+    Окремий список навмисно: не засмічуємо стандартний список власника, і в
+    будь-який момент усе наше можна прибрати одним рухом у Google.
+    """
+    title = title or settings.google_tasklist_title
+    cached = _tasklist_cache.get(title)
+    if cached:
+        return cached
+    api = _tasks_api(db)
+    if api is None:
+        return None
+    try:
+        listed = api.tasklists().list(maxResults=100).execute()
+        for item in listed.get("items", []):
+            if item.get("title") == title:
+                _tasklist_cache[title] = item["id"]
+                return item["id"]
+        created = api.tasklists().insert(body={"title": title}).execute()
+        _tasklist_cache[title] = created["id"]
+        return created["id"]
+    except Exception as exc:  # pragma: no cover
+        logger.warning("ensure_tasklist failed: %s", exc)
+        return None
+
+
+def list_google_tasks(db: Session, tasklist_id: str) -> list[dict]:
+    """Усі задачі списку, включно з виконаними і прихованими."""
+    api = _tasks_api(db)
+    if api is None:
+        return []
+    out: list[dict] = []
+    page = None
+    try:
+        while True:
+            resp = (
+                api.tasks()
+                .list(
+                    tasklist=tasklist_id,
+                    showCompleted=True,
+                    showHidden=True,
+                    maxResults=100,
+                    pageToken=page,
+                )
+                .execute()
+            )
+            out.extend(resp.get("items", []))
+            page = resp.get("nextPageToken")
+            if not page:
+                break
+    except Exception as exc:  # pragma: no cover
+        logger.warning("list_google_tasks failed: %s", exc)
+    return out
+
+
+def upsert_google_task(
+    db: Session,
+    tasklist_id: str,
+    *,
+    task_id: str | None,
+    title: str,
+    notes: str | None,
+    due: str | None,
+    completed: bool,
+) -> str | None:
+    """Створює або оновлює задачу в Google. Повертає її id або ``None``."""
+    api = _tasks_api(db)
+    if api is None:
+        return None
+    body: dict = {
+        "title": title[:1024],
+        "status": "completed" if completed else "needsAction",
+    }
+    if notes:
+        body["notes"] = notes[:8000]
+    # Google приймає RFC3339, але з поля due бере ЛИШЕ дату — час губиться.
+    body["due"] = due
+    if not completed:
+        # Знімаємо позначку виконання, якщо задачу відкрили назад у нас.
+        body["completed"] = None
+    try:
+        if task_id:
+            saved = (
+                api.tasks()
+                .patch(tasklist=tasklist_id, task=task_id, body=body)
+                .execute()
+            )
+        else:
+            saved = api.tasks().insert(tasklist=tasklist_id, body=body).execute()
+        return saved.get("id")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("upsert_google_task failed: %s", exc)
+        return None
+
+
+def delete_google_task(db: Session, tasklist_id: str, task_id: str) -> bool:
+    api = _tasks_api(db)
+    if api is None:
+        return False
+    try:
+        api.tasks().delete(tasklist=tasklist_id, task=task_id).execute()
+        return True
+    except Exception as exc:  # pragma: no cover
+        logger.warning("delete_google_task failed: %s", exc)
+        return False

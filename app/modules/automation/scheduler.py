@@ -71,6 +71,17 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+    # Задачі в Google Календарі: :45, щоб не збігтися з коучем (:05) і поштою (:25).
+    from app.modules.tasks.gsync import run_sync as run_gtasks_sync
+
+    _scheduler.add_job(
+        run_gtasks_sync,
+        "cron",
+        minute=45,
+        id="gtasks_sync",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 

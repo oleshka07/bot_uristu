@@ -55,6 +55,14 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     service.soft_delete(db, _task_or_404(db, task_id))
 
 
+@router.post("/gsync")
+def gsync(db: Session = Depends(get_db)):
+    """Дзеркалить задачі в Google Tasks — вони видні всередині Календаря."""
+    from .gsync import sync as run_sync
+
+    return run_sync(db)
+
+
 @router.post("/nudge")
 def nudge(db: Session = Depends(get_db)):
     """Нагадування в Telegram (кличе агент, коли мене немає за компʼютером)."""

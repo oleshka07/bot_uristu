@@ -1970,6 +1970,7 @@ def _handle_command(client, admin: int, text: str) -> None:
                 "/week — підсумок тижня просто зараз\n"
                 "/inbox — пошта, що чекає на відповідь\n"
                 "/mail &lt;№&gt; — лист із готовою чернеткою\n"
+                "/gsync — оновити задачі в Google Календарі\n"
                 "/embed — проіндексувати мережу для розумного пошуку\n"
                 "/enrich — підтягнути юзернейми/дні народження з Telegram\n"
                 "/today — дайджест дня\n"
@@ -2214,6 +2215,22 @@ def _handle_command(client, admin: int, text: str) -> None:
             lines.append("")
             lines.append("<code>/mail &lt;номер&gt;</code> — відкрити з чернеткою")
             client.send_message(admin, "\n".join(lines))
+        elif cmd in ("gsync", "calendar"):
+            from app.modules.tasks.gsync import sync as run_gsync
+
+            report = run_gsync(db)
+            if report.get("skipped"):
+                client.send_message(
+                    admin,
+                    "Google не підключений. Зайди в Integrations і підключи його.",
+                )
+                return
+            client.send_message(
+                admin,
+                f"Задачі в Google: надіслано {report['pushed']}, "
+                f"закрито з телефона {report['completed_from_google']}, "
+                f"відвʼязано {report['unlinked']}.",
+            )
         elif cmd == "overdue":
             _handle_command(client, admin, "/due")
         elif cmd in ("today", "network", "digest", "weekly", "monthly"):

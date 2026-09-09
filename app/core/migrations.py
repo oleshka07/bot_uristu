@@ -31,6 +31,9 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "recur": "VARCHAR(20)",
         "recur_days": "INTEGER",
         "next_remind_at": "TIMESTAMP",
+        "google_task_id": "VARCHAR(120)",
+        "google_synced_at": "TIMESTAMP",
+        "google_sync": "BOOLEAN DEFAULT TRUE",
     },
     "goals": {
         "project_id": "INTEGER",

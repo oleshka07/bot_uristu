@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     google_client_secret: str | None = None
     google_redirect_uri: str = "http://localhost:8000/api/integrations/google/callback"
     # How many days back to pull emails / calendar events when syncing.
+    google_tasklist_title: str = "Networking AI"
     sync_window_days: int = 120
 
     # Daily automation (background scheduler)
