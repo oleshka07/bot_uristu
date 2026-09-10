@@ -161,6 +161,10 @@ class Contact(Base):
     # Лічильник, а не час: підтягнуті заднім числом листи мають старий
     # occurred_at і за часом «новими» не виглядали б.
     consolidated_count: Mapped[int] = mapped_column(default=0)
+    # Коли востаннє перевіряли соцмережі — монітор іде по колу від найдавніших.
+    social_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships (string-based → no imports of sibling modules)
     tags: Mapped[list[Tag]] = relationship(

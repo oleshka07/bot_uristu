@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "checkins",
     "coach_settings",
     "email_threads",
+    "social_posts",
 }
 
 EXPECTED_ROUTES = {
@@ -120,6 +121,10 @@ EXPECTED_ROUTES = {
     ("POST", "/api/inbox/sync"),
     ("POST", "/api/inbox/{thread_pk}/draft"),
     ("POST", "/api/inbox/{thread_pk}/send"),
+    ("GET", "/api/social/status"),
+    ("POST", "/api/social/monitor"),
+    ("POST", "/api/social/contacts/{contact_id}/check"),
+    ("GET", "/api/social/contacts/{contact_id}/posts"),
     ("PATCH", "/api/inbox/{thread_pk}"),
 }
 

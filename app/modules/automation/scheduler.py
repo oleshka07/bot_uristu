@@ -93,6 +93,16 @@ def start() -> None:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+    # Соцмережі: раз на добу, пачкою; кожен контакт — не частіше ніж раз на N днів.
+    from app.modules.integrations.social.monitor import run_monitor as run_social_monitor
+
+    _scheduler.add_job(
+        run_social_monitor,
+        CronTrigger(hour=6, minute=15),
+        id="social_monitor",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
     if settings.meeting_brief_enabled:
         from .briefs import run_brief_check
 

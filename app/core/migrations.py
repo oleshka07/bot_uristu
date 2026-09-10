@@ -57,6 +57,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "importance": "INTEGER DEFAULT 0",
         "auto_reply_paused": "BOOLEAN DEFAULT FALSE",
         "consolidated_count": "INTEGER DEFAULT 0",
+        "social_checked_at": "TIMESTAMP",
     },
 }
 

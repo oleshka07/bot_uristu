@@ -124,7 +124,35 @@ def _contact_context(contact: models.Contact) -> str:
             text = (snap.raw_text or snap.title or "").strip().replace("\n", " ")
             lines.append(f"  - {snap.platform} ({snap.url}): {text[:300]}")
 
+    recent_posts = _recent_social_posts(contact)
+    if recent_posts:
+        lines.append("Recent social posts (newest first):")
+        for post in recent_posts:
+            when = post.posted_at.date().isoformat() if post.posted_at else "?"
+            text = (post.caption or post.alt_text or "").strip().replace("\n", " ")
+            lines.append(f"  - {when} [{post.platform}]: {text[:240]}")
+
     return "\n".join(lines)
+
+
+def _recent_social_posts(contact: models.Contact, limit: int = 6):
+    """Останні дописи людини — щоб чернетка могла зачепитися за свіже."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import object_session
+
+    from app.modules.integrations.social.models import SocialPost
+
+    session = object_session(contact)
+    if session is None:
+        return []
+    return list(
+        session.scalars(
+            select(SocialPost)
+            .where(SocialPost.contact_id == contact.id)
+            .order_by(SocialPost.posted_at.desc().nullslast(), SocialPost.id.desc())
+            .limit(limit)
+        )
+    )
 
 
 def _style_context(contact: models.Contact) -> str:
@@ -1147,3 +1175,86 @@ def draft_email_reply(
     parts.append(f"Лист від {sender}\nТема: {subject}\n\n{(body or '')[:5000]}")
     raw = llm.text(system, "\n\n".join(parts), max_tokens=800)
     return _clean(_strip_emoji(raw)) if raw else None
+
+
+# ── Соцмережі: нові дописи -> факти в досьє + приводи для контакту ──────────
+
+_SOCIAL_DIGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fact_type": {
+                        "type": "string",
+                        "enum": [
+                            "role", "employer", "location", "interest",
+                            "family", "relationship", "preference", "other",
+                        ],
+                    },
+                    "value": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "post_id": {"type": "string"},
+                },
+                "required": ["fact_type", "value", "confidence", "post_id"],
+                "additionalProperties": False,
+            },
+        },
+        "hooks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "event_type": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "post_id": {"type": "string"},
+                },
+                "required": ["event_type", "title", "description", "post_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["facts", "hooks"],
+    "additionalProperties": False,
+}
+
+
+def digest_social_posts(contact: models.Contact, posts: list[dict]) -> dict:
+    """Читає пачку нових дописів і розкладає на два кошики.
+
+    ``facts`` — стале, що варто памʼятати (нова робота, переїзд, хобі).
+    ``hooks`` — приводи написати саме зараз (запуск, нагорода, подія, дитина).
+    Кожен елемент несе ``post_id`` — для провенансу факту й дедупу приводу.
+    Порожні списки, якщо AI недоступний або в дописах нічого суттєвого.
+    """
+    if not llm.enabled() or not posts:
+        return {"facts": [], "hooks": []}
+    system = (
+        "Ти читаєш нові дописи людини в соцмережах для особистого CRM власника. "
+        "Виділи ДВА типи речей. facts — сталі факти про людину, які варто "
+        "памʼятати довго (роль, роботодавець, місто, інтереси, сімʼя). hooks — "
+        "події, з приводу яких доречно написати їй найближчими днями (запуск, "
+        "нагорода, виступ, нова робота, дитина, весілля, переїзд, втрата). "
+        "Будь суворим: селфі, цитати й реклама — це ні те, ні інше. Не вигадуй. "
+        "Мова значень — українська. Respond with JSON only."
+    )
+    lines = [f"Контакт: {contact.full_name} ({contact.relationship_type.value})", ""]
+    for p in posts[:20]:
+        when = p.get("posted_at") or "?"
+        text = (p.get("caption") or "").strip()
+        alt = (p.get("alt_text") or "").strip()
+        body = text or alt or "(без підпису)"
+        if text and alt:
+            body = f"{text}\n  [опис зображення: {alt}]"
+        lines.append(f"[post_id={p.get('external_id')}] {when} · {p.get('media_type') or 'post'}\n{body[:800]}")
+        lines.append("")
+    data = llm.json(system, "\n".join(lines), _SOCIAL_DIGEST_SCHEMA, max_tokens=1500)
+    if not isinstance(data, dict):
+        return {"facts": [], "hooks": []}
+    return {
+        "facts": [f for f in data.get("facts") or [] if isinstance(f, dict) and f.get("value")],
+        "hooks": [h for h in data.get("hooks") or [] if isinstance(h, dict) and h.get("title")],
+    }

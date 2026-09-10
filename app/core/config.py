@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # detect fresh life events (needs a scraper provider). 0 = off.
     social_sweep_daily: int = 5
 
+    # Монітор соцмереж: провайдер дописів. Зараз — Apify (керовані проксі,
+    # оплата за результат, без ризику для власного акаунта). Токен лише з env.
+    apify_api_token: str | None = None
+    apify_instagram_actor: str = "apify~instagram-scraper"
+    # Скільки контактів перевіряти за прохід і не частіше ніж раз на N днів
+    # кожного; скільки дописів тягнути з профілю за раз.
+    social_monitor_per_run: int = 10
+    social_monitor_every_days: int = 3
+    social_monitor_posts_limit: int = 12
+
     # Social scraping provider (for JS-heavy networks)
     scraper_provider: str | None = None  # e.g. "scrapingbee"
     scraper_api_key: str | None = None

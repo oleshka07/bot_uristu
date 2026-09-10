@@ -25,6 +25,7 @@ from .modules.gates.router import router as gates_router
 from .modules.goals.router import router as goals_router
 from .modules.insights.router import router as insights_router
 from .modules.integrations.router import router as integrations_router
+from .modules.integrations.social.monitor_router import router as social_monitor_router
 from .modules.integrations.social.router import router as imports_router
 from .modules.ideas.router import router as ideas_router
 from .modules.inbox.router import router as inbox_router
@@ -93,6 +94,7 @@ app.include_router(resources_router)
 app.include_router(coach_router)
 app.include_router(gates_router)
 app.include_router(inbox_router)
+app.include_router(social_monitor_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────
