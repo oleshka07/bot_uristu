@@ -130,7 +130,12 @@ def pending_checkin(db: Session) -> Checkin | None:
     """Питання, яке зараз чекає на відповідь (і ще не протухло)."""
     row = db.scalars(
         select(Checkin)
-        .where(Checkin.answered_at.is_(None), Checkin.source == "bot")
+        .where(
+            Checkin.answered_at.is_(None),
+            Checkin.source == "bot",
+            # Питання без тексту ще пише Claude у фоні — на нього не відповідають.
+            Checkin.question.is_not(None),
+        )
         .order_by(Checkin.asked_at.desc())
         .limit(1)
     ).first()
@@ -161,13 +166,18 @@ def asked_today(db: Session) -> Checkin | None:
     return row if asked and asked.date() == today else None
 
 
+def default_question(goal: Goal) -> str:
+    return f"Ціль: {goal.title}. Статус: {goal.status}. Що по ній зараз?"
+
+
 def open_question(db: Session, *, force: bool = False) -> tuple[Checkin, str] | None:
     """Створює звірку і повертає її разом із текстом питання.
 
     ``None`` — коли питати нема про що: сьогодні вже питали (і це не ``force``)
-    або немає жодної активної цілі.
+    або немає жодної активної цілі. Порожній текст — питання ще пише Claude
+    Code у фоні: звірка вже є, надішле її ``set_question_and_send``.
     """
-    from app.modules.insights import ai
+    from app.modules.aijobs import brain
 
     if not force and asked_today(db) is not None:
         return None
@@ -180,18 +190,32 @@ def open_question(db: Session, *, force: bool = False) -> tuple[Checkin, str] | 
     if goal is None:
         return None
 
-    theme = get_settings(db).theme or ""
-    question = ai.coach_question(goal.title, goal.status, goal.coach_notes or "", theme)
-    if not question:
-        question = f"Ціль: {goal.title}. Статус: {goal.status}. Що по ній зараз?"
-
-    checkin = Checkin(
-        goal_id=goal.id, question=question, status_before=goal.status, kind="progress"
-    )
+    checkin = Checkin(goal_id=goal.id, question=None, status_before=goal.status, kind="progress")
     db.add(checkin)
     db.commit()
     db.refresh(checkin)
+
+    question = brain.coach_question(db, goal, checkin)
+    if question is None and brain.deferred():
+        return checkin, ""
+    question = (question or "").strip() or default_question(goal)
+    checkin.question = question
+    db.commit()
     return checkin, question
+
+
+def set_question_and_send(db: Session, checkin: Checkin, text: str) -> bool:
+    """Дописує текст питання у звірку (складену у фоні) і надсилає власнику."""
+    import html
+
+    from app.modules.automation import telegram
+
+    goal = db.get(Goal, checkin.goal_id) if checkin.goal_id else None
+    text = " ".join((text or "").split()) or (default_question(goal) if goal else "Що по цілі?")
+    checkin.question = text
+    checkin.asked_at = datetime.now(timezone.utc)
+    db.commit()
+    return telegram.send_message(html.escape(text))
 
 
 def record_answer(db: Session, answer: str) -> str | None:
@@ -200,45 +224,71 @@ def record_answer(db: Session, answer: str) -> str | None:
     Повертає текст реакції для власника або ``None``, якщо відкритого
     питання немає — тоді викликач має обробити повідомлення по-своєму.
     """
-    from app.modules.insights import ai
-
     checkin = pending_checkin(db)
     if checkin is None:
         return None
     if checkin.task_id is not None:
         return _record_task_answer(db, checkin, answer)
     goal = db.get(Goal, checkin.goal_id)
+    checkin.answer = answer
+    checkin.answered_at = datetime.now(timezone.utc)
+    db.commit()
     if goal is None:
-        checkin.answered_at = datetime.now(timezone.utc)
-        checkin.answer = answer
-        db.commit()
         return "Ціль, про яку було питання, вже видалена."
 
-    review = ai.coach_review(
-        goal.title, goal.status, goal.coach_notes or "", answer
-    ) or {}
-    summary = (review.get("summary") or "").strip()
+    from app.modules.aijobs import brain
+
+    review = brain.coach_review(db, goal, checkin, answer)
+    if review is None:
+        # Claude Code розбере відповідь у фоні і відпише через MCP.
+        return "Прийняв, розберу."
+    return apply_review(
+        db, checkin,
+        summary=review.get("summary") or "",
+        status=review.get("status") or "",
+        reply=review.get("reply") or "",
+    )
+
+
+def apply_review(db: Session, checkin: Checkin, *, summary: str, status: str, reply: str) -> str:
+    """Кладе розбір відповіді в журнал цілі. Повертає текст реакції для власника.
+
+    Один вхід для всіх, хто думає: модель через ключ, Claude через MCP, відкат.
+    """
+    goal = db.get(Goal, checkin.goal_id) if checkin.goal_id else None
+    if goal is None:
+        return "Ціль, про яку було питання, вже видалена."
+    summary = " ".join((summary or "").split())
     if not summary:
         # Без AI (або якщо він мовчить) кладемо в журнал саму відповідь.
-        summary = " ".join(answer.split())[:280]
+        summary = " ".join((checkin.answer or "").split())[:280]
 
     goal.coach_notes = append_note(goal.coach_notes, summary)
     checkin.summary = summary[:300]
 
-    new_status = (review.get("status") or "").strip().lower()
+    new_status = (status or "").strip().lower()
     if new_status and new_status in set(GoalStatus) and new_status != goal.status:
         checkin.status_after = new_status
         goal.status = new_status
-
-    checkin.answer = answer
-    checkin.answered_at = datetime.now(timezone.utc)
+    if checkin.answered_at is None:
+        checkin.answered_at = datetime.now(timezone.utc)
     db.commit()
 
-    reply = (review.get("reply") or "").strip() or "Прийняв."
+    reply = " ".join((reply or "").split()) or "Прийняв."
     tail = ["записав"]
     if checkin.status_after:
         tail.append(f"статус -> {checkin.status_after}")
     return f"{reply}\n\n({', '.join(tail)})"
+
+
+def deliver_review(db: Session, checkin: Checkin, *, summary: str, status: str, reply: str) -> bool:
+    """apply_review + надіслати реакцію власнику (для фонового розбору)."""
+    import html
+
+    from app.modules.automation import telegram
+
+    text = apply_review(db, checkin, summary=summary, status=status, reply=reply)
+    return telegram.send_message(html.escape(text))
 
 
 def open_task_question(db: Session, task, question: str) -> Checkin:

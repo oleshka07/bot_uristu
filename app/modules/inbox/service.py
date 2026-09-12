@@ -87,11 +87,9 @@ def sync(db: Session, *, days: int = 14, limit: int = 60) -> dict:
     return {"fetched": len(fetched), "added": added, "reopened": reopened, "updated": updated}
 
 
-def classify_pending(db: Session, *, limit: int = 20) -> int:
-    """Класифікує треди, яких модель ще не бачила. Повертає скільки обробила."""
-    from app.modules.insights import ai
-
-    rows = list(
+def untriaged(db: Session, *, limit: int = 20) -> list[EmailThread]:
+    """Треди, яких модель ще не бачила (немає розмітки)."""
+    return list(
         db.scalars(
             select(EmailThread)
             .where(
@@ -102,34 +100,63 @@ def classify_pending(db: Session, *, limit: int = 20) -> int:
             .limit(limit)
         )
     )
+
+
+def undrafted(db: Session, *, limit: int = 5) -> list[EmailThread]:
+    """Чекають на відповідь і ще без чернетки."""
+    return list(
+        db.scalars(
+            select(EmailThread)
+            .where(
+                EmailThread.status == "waiting",
+                EmailThread.needs_reply.is_(True),
+                EmailThread.draft_text.is_(None),
+            )
+            .order_by(EmailThread.last_at.desc())
+            .limit(limit)
+        )
+    )
+
+
+def apply_triage(
+    db: Session, thread: EmailThread, *, needs_reply: bool, urgency: str, topic: str | None
+) -> EmailThread:
+    """Записує розмітку листа — байдуже, хто її дав: модель через ключ чи Claude через MCP."""
+    thread.needs_reply = bool(needs_reply)
+    thread.urgency = urgency if urgency in {"low", "normal", "high"} else "normal"
+    thread.topic = (topic or "").strip()[:200] or None
+    thread.classified_at = datetime.now(timezone.utc)
+    db.commit()
+    return thread
+
+
+def classify_pending(db: Session, *, limit: int = 20) -> int:
+    """Класифікує треди, яких модель ще не бачила. Повертає скільки обробила."""
+    from app.modules.insights import ai
+
     done = 0
-    for thread in rows:
+    for thread in untriaged(db, limit=limit):
         verdict = ai.triage_email(
             thread.subject, thread.from_email, thread.body or thread.snippet or ""
         )
         if verdict is None:
             continue  # AI недоступний — лишаємо як є, покажемо без розмітки
-        thread.needs_reply = verdict["needs_reply"]
-        thread.urgency = verdict["urgency"]
-        thread.topic = verdict["topic"] or None
-        thread.classified_at = datetime.now(timezone.utc)
+        apply_triage(
+            db, thread,
+            needs_reply=verdict["needs_reply"], urgency=verdict["urgency"], topic=verdict["topic"],
+        )
         done += 1
     db.commit()
     return done
 
 
-def make_draft(db: Session, thread: EmailThread, *, push: bool = True) -> EmailThread:
-    """Складає чернетку відповіді і, якщо дозволяє скоуп, кладе її в Gmail."""
-    from app.modules.insights import ai
+def save_draft(db: Session, thread: EmailThread, text: str, *, push: bool = True) -> EmailThread:
+    """Зберігає готовий текст чернетки і, якщо дозволяє скоуп, кладе її в Gmail."""
     from app.modules.integrations.google import client as google
 
-    contact = db.get(Contact, thread.contact_id) if thread.contact_id else None
-    text = ai.draft_email_reply(
-        thread.subject, thread.from_email, thread.body or thread.snippet or "", contact
-    )
+    text = (text or "").strip()
     if not text:
         return thread
-
     thread.draft_text = text
     thread.drafted_at = datetime.now(timezone.utc)
     if push:
@@ -147,20 +174,22 @@ def make_draft(db: Session, thread: EmailThread, *, push: bool = True) -> EmailT
     return thread
 
 
+def make_draft(db: Session, thread: EmailThread, *, push: bool = True) -> EmailThread:
+    """Складає чернетку відповіді моделлю через ключ і зберігає її."""
+    from app.modules.insights import ai
+
+    contact = db.get(Contact, thread.contact_id) if thread.contact_id else None
+    text = ai.draft_email_reply(
+        thread.subject, thread.from_email, thread.body or thread.snippet or "", contact
+    )
+    if not text:
+        return thread
+    return save_draft(db, thread, text, push=push)
+
+
 def draft_pending(db: Session, *, limit: int = 5) -> int:
     """Пише чернетки для листів, які чекають на відповідь і ще без чернетки."""
-    rows = list(
-        db.scalars(
-            select(EmailThread)
-            .where(
-                EmailThread.status == "waiting",
-                EmailThread.needs_reply.is_(True),
-                EmailThread.draft_text.is_(None),
-            )
-            .order_by(EmailThread.last_at.desc())
-            .limit(limit)
-        )
-    )
+    rows = undrafted(db, limit=limit)
     for thread in rows:
         try:
             make_draft(db, thread)
@@ -216,10 +245,11 @@ def run_sync(days: int = 14) -> dict:
     """Повний прохід для планувальника: синк -> класифікація -> чернетки."""
     from app.core.database import SessionLocal
 
+    from app.modules.aijobs import brain
+
     with SessionLocal() as db:
         report = sync(db, days=days)
-        report["classified"] = classify_pending(db)
-        report["drafted"] = draft_pending(db)
+        report.update(brain.triage_inbox(db))
         return report
 
 

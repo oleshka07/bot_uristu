@@ -260,20 +260,12 @@ def run_consolidation() -> dict:
     from app.core.config import settings
     from app.core.database import SessionLocal
 
-    logger = logging.getLogger("networking.consolidation")
+    from app.modules.aijobs import brain
+
     report = {"consolidated": 0, "facts": 0, "failed": 0, "due": 0}
     with SessionLocal() as db:
         contacts = due_for_consolidation(db, limit=settings.consolidate_max_per_run)
         report["due"] = len(due_for_consolidation(db))
-        for contact in contacts:
-            try:
-                result = consolidate_contact(db, contact)
-                if result.get("skipped"):
-                    break  # без AI далі йти нема сенсу
-                report["consolidated"] += 1
-                report["facts"] += result.get("facts", 0)
-            except Exception as exc:  # pragma: no cover - один контакт не спиняє решту
-                db.rollback()
-                report["failed"] += 1
-                logger.warning("consolidation of contact %s failed: %s", contact.id, exc)
+        # Хто думає — модель через ключ або Claude Code через MCP — вирішує brain.
+        report.update(brain.consolidate(db, contacts))
     return report

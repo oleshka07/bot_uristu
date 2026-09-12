@@ -47,6 +47,9 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      BACKGROUND_AI: ${BACKGROUND_AI:-api}
+      BACKGROUND_AI_FALLBACK: ${BACKGROUND_AI_FALLBACK:-api}
     ports:
       - "${WEB_PORT:-8000}:8000"
 
@@ -71,7 +74,41 @@ services:
       TELEGRAM_POLLING_ENABLED: ${TELEGRAM_POLLING_ENABLED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       SYNC_AI_SENTIMENT: ${SYNC_AI_SENTIMENT:-true}
+      BACKGROUND_AI: ${BACKGROUND_AI:-api}
+      BACKGROUND_AI_FALLBACK: ${BACKGROUND_AI_FALLBACK:-api}
+
+  # Фоновий AI на підписці: Claude Code CLI бере задачі з черги ai_jobs і
+  # працює через наш MCP. Без CLAUDE_CODE_OAUTH_TOKEN просто спить.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://networking:${POSTGRES_PASSWORD:-networking}@db:5432/networking
+      BACKGROUND_AI: ${BACKGROUND_AI:-api}
+      BACKGROUND_AI_FALLBACK: ${BACKGROUND_AI_FALLBACK:-api}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CLAUDE_CODE_MODEL: ${CLAUDE_CODE_MODEL:-sonnet}
+      MCP_INTERNAL_URL: ${MCP_INTERNAL_URL:-http://web:8000}
+      AIJOBS_MAX_PER_HOUR: ${AIJOBS_MAX_PER_HOUR:-40}
+      AIJOBS_QUIET_HOURS: ${AIJOBS_QUIET_HOURS:-}
+      # Для відкату на API і для повідомлень власнику.
+      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-opus-4-8}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
 
 volumes:
   pgdata:

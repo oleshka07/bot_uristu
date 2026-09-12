@@ -1051,13 +1051,14 @@ async function linkGoalToContact(contactId) {
 async function renderIntegrations() {
   const main = $("#main");
   main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div><div class="empty"><span class="spinner"></span></div>`;
-  let g, ch, tg, mcp;
+  let g, ch, tg, mcp, jobs;
   try {
-    [g, ch, tg, mcp] = await Promise.all([
+    [g, ch, tg, mcp, jobs] = await Promise.all([
       api("/integrations/google/status"),
       api("/integrations/chater/status"),
       api("/integrations/telegram/status"),
       api("/integrations/mcp/status"),
+      api("/aijobs/status"),
     ]);
   } catch (e) { return showError(e); }
 
@@ -1067,12 +1068,55 @@ async function renderIntegrations() {
       <div class="card"><h3 class="section-title">Chater (Telegram bot database)</h3><div id="ch-body"></div></div>
       <div class="card"><h3 class="section-title">Telegram digest & bot</h3><div id="tg-body"></div></div>
       <div class="card"><h3 class="section-title">Claude (MCP)</h3><div id="mcp-body"></div></div>
+      <div class="card"><h3 class="section-title">Фоновий AI</h3><div id="aijobs-body"></div></div>
     </div>`;
 
   renderGooglePanel(g);
   renderChaterPanel(ch);
   renderTelegramPanel(tg);
   renderMcpPanel(mcp);
+  renderAiJobsPanel(jobs);
+}
+
+function renderAiJobsPanel(st) {
+  const body = $("#aijobs-body");
+  const modeLabel = { api: "API (модель через ключ)", claude_code: "Claude Code (підписка, через MCP)", off: "вимкнено" }[st.mode] || st.mode;
+  const c = st.counts || {};
+  const use = (u) => `${u.runs} запусків · ${u.tokens_in.toLocaleString("uk-UA")} in / ${u.tokens_out.toLocaleString("uk-UA")} out · $${u.cost_usd}`;
+  const explain = `
+    <details class="mt"><summary class="muted">Що це</summary>
+      <p class="muted">Фонові задачі (чернетки на вхідні, розбір пошти, досьє, дописи, коуч) виконує або модель через API-ключ,
+      або Claude Code на підписці — через наш MCP. Перемикач <code>BACKGROUND_AI</code> у <code>.env</code>: <code>api</code> / <code>claude_code</code> / <code>off</code>.
+      Коли Claude Code не впорався за ${'3'} спроби, задача відкочується на API (<code>BACKGROUND_AI_FALLBACK=api</code>).</p>
+      <p class="muted">Гальма для квоти: пауза тут, тихі години (<code>AIJOBS_QUIET_HOURS=23-7</code>), стеля ${st.max_per_hour} запусків на годину, модель <code>CLAUDE_CODE_MODEL</code>.</p>
+    </details>`;
+  if (st.mode !== "claude_code") {
+    body.innerHTML = `<p class="muted">Режим: <b>${esc(modeLabel)}</b>. Черга не використовується — все рахується одразу.</p>${explain}`;
+    return;
+  }
+  body.innerHTML = `
+    <p class="muted">Режим: <b>${esc(modeLabel)}</b>${st.paused ? " · <b>на паузі</b>" : ""}${st.quiet_now ? " · тихі години" : ""}</p>
+    <p class="muted">Черга: ${c.queued || 0} чекають · ${c.running || 0} виконується · ${c.done || 0} готово · ${c.failed || 0} впало</p>
+    <p class="muted">Сьогодні: ${use(st.today)}<br>Тиждень: ${use(st.week)}</p>
+    <div class="flex mt" style="gap:6px">
+      <button class="btn small" id="aijobs-toggle">${st.paused ? "Продовжити" : "Пауза"}</button>
+      <button class="btn small" id="aijobs-log">Журнал</button>
+    </div>
+    <div id="aijobs-log-body" class="mt"></div>${explain}`;
+  $("#aijobs-toggle").addEventListener("click", async () => {
+    try { renderAiJobsPanel(await api(st.paused ? "/aijobs/resume" : "/aijobs/pause", { method: "POST" })); }
+    catch (e) { toast(e.message, true); }
+  });
+  $("#aijobs-log").addEventListener("click", async () => {
+    try {
+      const rows = await api("/aijobs");
+      const box = $("#aijobs-log-body");
+      if (!rows.length) { box.innerHTML = `<p class="muted">Журнал порожній.</p>`; return; }
+      box.innerHTML = `<table class="table"><thead><tr><th>#</th><th>Що</th><th>Стан</th><th>Хто</th><th>Результат</th></tr></thead><tbody>${
+        rows.map((j) => `<tr><td>${j.id}</td><td>${esc(j.kind)}</td><td>${esc(j.status)}${j.attempts > 1 ? ` (${j.attempts})` : ""}</td><td>${esc(j.backend || "—")}</td><td class="muted">${esc((j.error || j.result || "").slice(0, 160))}</td></tr>`).join("")
+      }</tbody></table>`;
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function renderMcpPanel(st) {

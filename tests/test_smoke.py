@@ -31,6 +31,8 @@ EXPECTED_TABLES = {
     "coach_settings",
     "email_threads",
     "social_posts",
+    "ai_jobs",
+    "ai_jobs_control",
 }
 
 EXPECTED_ROUTES = {
@@ -112,6 +114,10 @@ EXPECTED_ROUTES = {
     ("PATCH", "/api/coach/settings"),
     ("GET", "/api/coach/checkins"),
     ("POST", "/api/coach/ask"),
+    ("GET", "/api/aijobs"),
+    ("GET", "/api/aijobs/status"),
+    ("POST", "/api/aijobs/pause"),
+    ("POST", "/api/aijobs/resume"),
     ("GET", "/api/gates"),
     ("POST", "/api/gates"),
     ("POST", "/api/gates/nudge"),

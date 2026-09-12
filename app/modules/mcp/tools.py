@@ -284,7 +284,12 @@ def add_fact(db: Session, args: dict) -> str:
         fact_type = FactType(raw_type)
     except ValueError:
         raise ToolError(f"fact_type має бути одним із: {', '.join(t.value for t in FactType)}.")
-    fact = insights.add_fact(db, contact, fact_type=fact_type, value=value, source="claude")
+    post_id = str(args.get("post") or "").strip()
+    fact = insights.add_fact(
+        db, contact, fact_type=fact_type, value=value,
+        source="instagram" if post_id else "claude",
+        source_ref=f"post:{post_id}" if post_id else None,
+    )
     return f"Факт про {contact.full_name} збережено (#{fact.id}, {fact_type.value}): {value}"
 
 
@@ -529,6 +534,280 @@ def set_reminder(db: Session, args: dict) -> str:
 # ── Реєстр ───────────────────────────────────────────────────────────────────
 
 
+# ── Фонові інструменти: для воркера Claude Code (BACKGROUND_AI=claude_code) ──
+#
+# Воркер запускає `claude -p` з профілем MCP на 4–8 інструментів. Кожен
+# інструмент нижче — «вхід» або «вихід» однієї фонової задачі: віддати
+# контекст, прийняти готовий результат дослівно. Думає Claude, система — ні.
+
+
+def _checkin(db: Session, ref):
+    from app.modules.coach.models import Checkin
+
+    m = _ID_RE.match(str(ref or "").strip())
+    row = db.get(Checkin, int(m.group(1))) if m else None
+    if row is None:
+        raise ToolError("Такої звірки немає. Номер приходить у завданні (#id).")
+    return row
+
+
+def _goal_block(goal, theme: str | None) -> str:
+    from app.modules.coach import service as coach
+
+    touch = coach.last_touch(goal)
+    lines = [
+        f"Ціль #{goal.id}: {goal.title}",
+        f"статус: {goal.status}; пріоритет: {goal.priority}; сфера: {goal.area or '—'}; горизонт: {goal.horizon or '—'}",
+        f"останній запис: {_when(touch) if touch else 'ще не було'}",
+    ]
+    if theme:
+        lines.append(f"тема року власника: {theme}")
+    if goal.coach_notes:
+        lines += ["", "Журнал коуча (останнє внизу):", goal.coach_notes.strip()[-2500:]]
+    else:
+        lines += ["", "Журнал коуча порожній."]
+    return "\n".join(lines)
+
+
+def get_pending_reply(db: Session, args: dict) -> str:
+    from app.modules.insights.ai import _contact_context
+    from app.modules.telegram_bot.models import DraftStatus, TelegramDraft
+
+    m = _ID_RE.match(str(args.get("draft") or "").strip())
+    draft = db.get(TelegramDraft, int(m.group(1))) if m else None
+    if draft is None:
+        raise ToolError("Такої чернетки немає.")
+    if draft.status != DraftStatus.pending:
+        raise ToolError(f"Чернетка #{draft.id} вже {draft.status.value} — нічого писати не треба.")
+    contact = draft.contact
+    lines = [
+        f"Чернетка #{draft.id} для {_contact_line(contact)}",
+        f"бажаний тон: {contact.tone}" if contact.tone else "",
+        "",
+        "Вхідне повідомлення:",
+        (draft.incoming_text or "").strip(),
+    ]
+    if draft.draft_text:
+        lines += ["", "Поточний текст чернетки (переписуй лише якщо є що покращити):", draft.draft_text]
+    lines += ["", "Памʼять про людину:", _contact_context(contact)]
+    return "\n".join(line for line in lines if line is not None)
+
+
+def fill_reply_draft(db: Session, args: dict) -> str:
+    from app.modules.telegram_bot import service as bot
+    from app.modules.telegram_bot.models import TelegramDraft
+
+    m = _ID_RE.match(str(args.get("draft") or "").strip())
+    draft = db.get(TelegramDraft, int(m.group(1))) if m else None
+    if draft is None:
+        raise ToolError("Такої чернетки немає.")
+    text = str(args.get("text") or "").strip()
+    if not text:
+        raise ToolError("Порожній текст. Якщо відповідати не треба — передай [SKIP].")
+    outcome = bot.fill_reply_draft(db, draft, text)
+    if outcome == "stale":
+        return f"Чернетка #{draft.id} вже закрита власником — текст не потрібен."
+    if outcome == "skipped":
+        return f"Чернетку #{draft.id} пропущено: відповідь не потрібна."
+    return f"Чернетку #{draft.id} заповнено дослівно; картка в Telegram оновлена, власник вирішить, чи надсилати."
+
+
+def list_untriaged_emails(db: Session, args: dict) -> str:
+    from app.modules.inbox import service as inbox
+
+    limit = _int(args.get("limit"), 10, 1, 30)
+    fresh = inbox.untriaged(db, limit=limit)
+    need = inbox.undrafted(db, limit=limit)
+    if not fresh and not need:
+        return "Роботи з поштою немає: усе розмічено, чернетки є."
+    lines = []
+    if fresh:
+        lines.append("Без розмітки (crm_triage_email для кожного):")
+        for t in fresh:
+            body = _clip(t.body or t.snippet, 700)
+            lines.append(f"#{t.id} від {t.from_name or t.from_email} <{t.from_email}> · {_when(t.last_at)}\n  тема: {t.subject}\n  {body}")
+    if need:
+        lines += ["", "Чекають відповіді, чернетки ще немає (crm_get_email → crm_save_email_draft):"]
+        for t in need:
+            lines.append(f"#{t.id} {t.from_name or t.from_email} — {_clip(t.topic or t.subject, 90)} ({inbox.age_days(t)} дн)")
+    return "\n".join(lines)
+
+
+def triage_email(db: Session, args: dict) -> str:
+    from app.modules.inbox import service as inbox
+
+    t = _thread(db, args.get("email"))
+    if "needs_reply" not in args:
+        raise ToolError("Потрібен needs_reply: true/false.")
+    urgency = str(args.get("urgency") or "normal").lower()
+    if urgency not in {"low", "normal", "high"}:
+        raise ToolError("urgency має бути low, normal або high.")
+    inbox.apply_triage(
+        db, t, needs_reply=bool(args.get("needs_reply")), urgency=urgency,
+        topic=str(args.get("topic") or ""),
+    )
+    tail = " Тепер напиши чернетку: crm_get_email → crm_save_email_draft." if t.needs_reply and not t.draft_text else ""
+    return f"Лист #{t.id} розмічено: відповідь {'потрібна' if t.needs_reply else 'не потрібна'}, {t.urgency}, «{t.topic or '—'}».{tail}"
+
+
+def list_contacts_to_consolidate(db: Session, args: dict) -> str:
+    from app.modules.insights import service as insights
+
+    limit = _int(args.get("limit"), 5, 1, 20)
+    rows = insights.due_for_consolidation(db, limit=limit)
+    if not rows:
+        return "Памʼять про всіх актуальна — консолідувати нікого."
+    lines = ["Контакти, чия памʼять відстала від історії (crm_get_contact_memory → crm_save_dossier):"]
+    for c in rows:
+        lines.append(
+            f"{_contact_line(c)} · взаємодій {len(c.interactions)}, у досьє враховано {c.consolidated_count or 0}"
+        )
+    return "\n".join(lines)
+
+
+def save_dossier(db: Session, args: dict) -> str:
+    contact = _resolve_contact(db, args.get("contact"))
+    text = str(args.get("text") or "").strip()
+    if len(text) < 40:
+        raise ToolError("Досьє надто коротке: потрібно 120–200 слів лише з даних памʼяті.")
+    contact.ai_dossier = text
+    contact.ai_dossier_updated_at = datetime.now(timezone.utc)
+    contact.consolidated_count = len(contact.interactions)
+    db.commit()
+    return f"Досьє {contact.full_name} оновлено ({len(text.split())} слів). Сталі факти окремо — crm_add_fact."
+
+
+def list_unprocessed_posts(db: Session, args: dict) -> str:
+    from app.modules.integrations.social import monitor
+
+    contact = _resolve_contact(db, args.get("contact"))
+    posts = monitor.unprocessed_posts(db, contact)
+    if not posts:
+        return f"У {contact.full_name} непрочитаних дописів немає."
+    lines = [f"Нові дописи {contact.full_name} ({len(posts)}); id допису — для crm_add_fact/crm_add_life_event:"]
+    for p in posts:
+        text = _clip(p.caption or p.alt_text, 600) or "(без підпису)"
+        lines.append(f"[{p.external_id}] {_when(p.posted_at)} · {p.media_type or 'post'} · {text}")
+    lines += ["", "Наприкінці обовʼязково crm_mark_posts_processed."]
+    return "\n".join(lines)
+
+
+def add_life_event(db: Session, args: dict) -> str:
+    from app.modules.insights import service as insights
+    from app.modules.integrations.social.models import SocialPost
+
+    contact = _resolve_contact(db, args.get("contact"))
+    title = str(args.get("title") or "").strip()[:240]
+    if not title:
+        raise ToolError("Порожня назва події.")
+    if title.casefold() in {e.title.casefold() for e in contact.life_events}:
+        return f"Подія «{title}» у {contact.full_name} вже є — не дублюю."
+    event_date = _parse_date(args.get("event_date"))
+    post_id = str(args.get("post") or "").strip()
+    if post_id and event_date is None:
+        post = db.scalar(select(SocialPost).where(SocialPost.contact_id == contact.id, SocialPost.external_id == post_id))
+        if post is not None and post.posted_at:
+            event_date = post.posted_at.date()
+    ev = insights.add_life_event(
+        db, contact,
+        event_type=str(args.get("event_type") or "update")[:80],
+        title=title,
+        description=(str(args.get("description") or "").strip() or None),
+        event_date=event_date,
+        source="instagram" if post_id else "claude",
+    )
+    return f"Подію #{ev.id} «{title}» записано для {contact.full_name} — привід написати підхопить обхід."
+
+
+def mark_posts_processed(db: Session, args: dict) -> str:
+    from app.modules.integrations.social import monitor
+
+    contact = _resolve_contact(db, args.get("contact"))
+    n = monitor.mark_processed(db, monitor.unprocessed_posts(db, contact))
+    return f"Позначено прочитаними {n} дописів {contact.full_name}."
+
+
+def get_pending_coach_question(db: Session, args: dict) -> str:
+    from app.modules.coach import service as coach
+
+    row = _checkin(db, args.get("checkin"))
+    if row.question:
+        raise ToolError(f"У звірки #{row.id} питання вже є: «{row.question}». Нове не потрібне.")
+    if row.goal is None:
+        raise ToolError("Ціль цієї звірки вже видалена — питання не потрібне.")
+    theme = coach.get_settings(db).theme or ""
+    return f"Звірка #{row.id}\n{_goal_block(row.goal, theme)}"
+
+
+def set_coach_question(db: Session, args: dict) -> str:
+    from app.modules.coach import service as coach
+
+    row = _checkin(db, args.get("checkin"))
+    text = " ".join(str(args.get("text") or "").split())
+    if not text:
+        raise ToolError("Порожнє питання.")
+    if row.question:
+        return f"У звірки #{row.id} питання вже було — не перезаписую."
+    sent = coach.set_question_and_send(db, row, text)
+    return f"Питання по звірці #{row.id} збережено{' і надіслано власнику' if sent else ' (Telegram не відповів, надішлемо з наступним тиком)'}."
+
+
+def get_checkin_to_review(db: Session, args: dict) -> str:
+    from app.modules.coach import service as coach
+
+    row = _checkin(db, args.get("checkin"))
+    if row.summary:
+        raise ToolError(f"Звірку #{row.id} вже розібрано: «{row.summary}».")
+    if not row.answer:
+        raise ToolError(f"У звірки #{row.id} ще немає відповіді власника.")
+    if row.goal is None:
+        raise ToolError("Ціль цієї звірки вже видалена.")
+    theme = coach.get_settings(db).theme or ""
+    return (
+        f"Звірка #{row.id}\n{_goal_block(row.goal, theme)}\n\n"
+        f"Питання: {row.question or '—'}\nВідповідь власника: {row.answer}"
+    )
+
+
+def record_checkin_review(db: Session, args: dict) -> str:
+    from app.modules.coach import service as coach
+    from app.modules.goals.models import GoalStatus
+
+    row = _checkin(db, args.get("checkin"))
+    if row.summary:
+        return f"Звірку #{row.id} вже розібрано — не дублюю."
+    summary = str(args.get("summary") or "").strip()
+    if not summary:
+        raise ToolError("Потрібен summary: 3–15 слів, суть відповіді.")
+    status = str(args.get("status") or "").strip().lower()
+    if status and status not in set(GoalStatus):
+        raise ToolError(f"status має бути одним із: {', '.join(s.value for s in GoalStatus)} — або порожнім.")
+    coach.deliver_review(db, row, summary=summary, status=status, reply=str(args.get("reply") or ""))
+    changed = f"; статус → {row.status_after}" if row.status_after else ""
+    return f"Розбір звірки #{row.id} записано в журнал цілі{changed}; реакцію надіслано власнику."
+
+
+def get_week_block(db: Session, args: dict) -> str:
+    from app.modules.coach import jobs as coach_jobs
+
+    block, stalled = coach_jobs.week_block(db)
+    note = "ТИЖДЕНЬ БЕЗ РУХУ: жодної зміни і жодного запису." if stalled else "За тиждень був рух."
+    return f"{block}\n\n{note}"
+
+
+def send_owner_message(db: Session, args: dict) -> str:
+    import html
+
+    from app.modules.automation import telegram
+
+    text = str(args.get("text") or "").strip()
+    if not text:
+        raise ToolError("Порожнє повідомлення.")
+    if not telegram.send_message(html.escape(text[:3800])):
+        raise ToolError("Telegram не прийняв повідомлення (бот не налаштований або помилка API).")
+    return "Повідомлення власнику надіслано."
+
+
 def _schema(props: dict, required: list[str] | None = None) -> dict:
     return {
         "type": "object",
@@ -569,7 +848,7 @@ TOOLS: list[dict] = [
                             ["contact", "summary"]), "annotations": _WRITE},
     {"name": "crm_add_fact", "title": "Додати факт про людину",
      "description": "Сталий факт у досьє (роль, роботодавець, місто, інтерес, сімʼя). Новий роботодавець витісняє старий, історія лишається.",
-     "inputSchema": _schema({"contact": _CONTACT, "fact_type": {"type": "string", "description": "role, employer, location, interest, family, relationship, preference, other"}, "value": {"type": "string"}}, ["contact", "value"]),
+     "inputSchema": _schema({"contact": _CONTACT, "fact_type": {"type": "string", "description": "role, employer, location, interest, family, relationship, preference, other"}, "value": {"type": "string"}, "post": {"type": "string", "description": "id допису з crm_list_unprocessed_posts, якщо факт звідти"}}, ["contact", "value"]),
      "annotations": _WRITE},
     {"name": "crm_list_inbox", "title": "Пошта, що чекає",
      "description": "Листи, які чекають відповіді власника: хто, про що, скільки днів, чи є чернетка.",
@@ -623,6 +902,56 @@ TOOLS: list[dict] = [
      "description": "Нагадування на дату/час, за бажанням привʼязане до людини — спливе в боті.",
      "inputSchema": _schema({"text": {"type": "string"}, "due_at": {"type": "string", "description": "YYYY-MM-DD (о 09:00) або YYYY-MM-DDTHH:MM"}, "contact": _CONTACT}, ["text", "due_at"]),
      "annotations": _WRITE},
+    # ── фонові (профілі воркера Claude Code) ──
+    {"name": "crm_get_pending_reply", "title": "Вхідне, що чекає чернетки",
+     "description": "Вхідне повідомлення в Telegram і памʼять про людину для чернетки #draft. Далі crm_get_owner_voice і crm_fill_reply_draft.",
+     "inputSchema": _schema({"draft": {"type": "string", "description": "#id чернетки із завдання"}}, ["draft"]), "annotations": _RO},
+    {"name": "crm_fill_reply_draft", "title": "Заповнити чернетку відповіді",
+     "description": "Кладе твій текст ДОСЛІВНО у чернетку відповіді; картка в Telegram власника оновлюється сама. [SKIP] — коли відповідати не треба.",
+     "inputSchema": _schema({"draft": {"type": "string"}, "text": {"type": "string"}}, ["draft", "text"]), "annotations": _WRITE},
+    {"name": "crm_list_untriaged_emails", "title": "Пошта, що чекає розбору",
+     "description": "Листи без розмітки (з текстом) і листи, що чекають відповіді без чернетки.",
+     "inputSchema": _schema({"limit": _LIMIT}), "annotations": _RO},
+    {"name": "crm_triage_email", "title": "Розмітити лист",
+     "description": "Записати вердикт по листу: чи чекає відповіді власника, терміновість (low/normal/high) і про що він у 5–12 словах.",
+     "inputSchema": _schema({"email": {"type": "string"}, "needs_reply": {"type": "boolean"}, "urgency": {"type": "string"}, "topic": {"type": "string"}}, ["email", "needs_reply"]),
+     "annotations": _WRITE},
+    {"name": "crm_list_contacts_to_consolidate", "title": "Кому оновити досьє",
+     "description": "Контакти, у яких назбиралося нове після останнього досьє.",
+     "inputSchema": _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 20}}), "annotations": _RO},
+    {"name": "crm_save_dossier", "title": "Зберегти досьє",
+     "description": "Записує досьє контакту ДОСЛІВНО (120–200 слів лише з даних памʼяті) і позначає памʼять актуальною.",
+     "inputSchema": _schema({"contact": _CONTACT, "text": {"type": "string"}}, ["contact", "text"]), "annotations": _WRITE},
+    {"name": "crm_list_unprocessed_posts", "title": "Нові дописи контакту",
+     "description": "Непрочитані дописи людини з соцмереж: id, дата, підпис.",
+     "inputSchema": _schema({"contact": _CONTACT}, ["contact"]), "annotations": _RO},
+    {"name": "crm_add_life_event", "title": "Записати подію життя",
+     "description": "Привід написати людині найближчими днями (запуск, нагорода, нова робота, дитина, переїзд). Дублікати за назвою не створюються.",
+     "inputSchema": _schema({"contact": _CONTACT, "title": {"type": "string"}, "event_type": {"type": "string", "description": "launch, award, new_job, baby, move, update…"}, "description": {"type": "string"}, "event_date": {"type": "string", "description": "YYYY-MM-DD"}, "post": {"type": "string", "description": "id допису-джерела"}}, ["contact", "title"]),
+     "annotations": _WRITE},
+    {"name": "crm_mark_posts_processed", "title": "Дописи прочитано",
+     "description": "Позначає всі непрочитані дописи контакту опрацьованими. Виклич наприкінці.",
+     "inputSchema": _schema({"contact": _CONTACT}, ["contact"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+    {"name": "crm_get_pending_coach_question", "title": "Ціль для питання дня",
+     "description": "Ціль, статус і журнал коуча для звірки, якій ще треба сформулювати питання.",
+     "inputSchema": _schema({"checkin": {"type": "string", "description": "#id звірки із завдання"}}, ["checkin"]), "annotations": _RO},
+    {"name": "crm_set_coach_question", "title": "Задати питання дня",
+     "description": "Зберігає твоє питання по цілі ДОСЛІВНО і надсилає його власнику в Telegram.",
+     "inputSchema": _schema({"checkin": {"type": "string"}, "text": {"type": "string"}}, ["checkin", "text"]), "annotations": _WRITE},
+    {"name": "crm_get_checkin_to_review", "title": "Відповідь власника по цілі",
+     "description": "Питання, відповідь власника і журнал цілі — для розбору.",
+     "inputSchema": _schema({"checkin": {"type": "string"}}, ["checkin"]), "annotations": _RO},
+    {"name": "crm_record_checkin_review", "title": "Записати розбір відповіді",
+     "description": "Кладе summary (3–15 слів) у журнал цілі, за потреби міняє статус, надсилає власнику коротку реакцію.",
+     "inputSchema": _schema({"checkin": {"type": "string"}, "summary": {"type": "string"}, "status": {"type": "string", "description": "порожньо або not started, in progress, almost, done, cancelled, postponed to next year, postponed to far future"}, "reply": {"type": "string"}}, ["checkin", "summary"]),
+     "annotations": _WRITE},
+    {"name": "crm_get_week_block", "title": "Цифри тижня",
+     "description": "Готовий тижневий зріз по цілях (цифри, зміни статусів, записи, ворота) і ознака «тиждень без руху».",
+     "inputSchema": _schema({}), "annotations": _RO},
+    {"name": "crm_send_owner_message", "title": "Написати власнику",
+     "description": "Надсилає текст власнику в Telegram як є. Для підсумків і того, що він має побачити зараз.",
+     "inputSchema": _schema({"text": {"type": "string"}}, ["text"]), "annotations": _WRITE},
 ]
 
 HANDLERS = {
@@ -648,7 +977,55 @@ HANDLERS = {
     "crm_create_idea": create_idea,
     "crm_save_link": save_link,
     "crm_set_reminder": set_reminder,
+    "crm_get_pending_reply": get_pending_reply,
+    "crm_fill_reply_draft": fill_reply_draft,
+    "crm_list_untriaged_emails": list_untriaged_emails,
+    "crm_triage_email": triage_email,
+    "crm_list_contacts_to_consolidate": list_contacts_to_consolidate,
+    "crm_save_dossier": save_dossier,
+    "crm_list_unprocessed_posts": list_unprocessed_posts,
+    "crm_add_life_event": add_life_event,
+    "crm_mark_posts_processed": mark_posts_processed,
+    "crm_get_pending_coach_question": get_pending_coach_question,
+    "crm_set_coach_question": set_coach_question,
+    "crm_get_checkin_to_review": get_checkin_to_review,
+    "crm_record_checkin_review": record_checkin_review,
+    "crm_get_week_block": get_week_block,
+    "crm_send_owner_message": send_owner_message,
 }
+
+#: Профілі для фонового воркера: `?profile=<name>` у адресі MCP обмежує
+#: tools/list до кількох інструментів — менше схем у контексті, менше квоти.
+#: Невідомий профіль (або без нього — інтерактивний Claude) = усі інструменти.
+PROFILES: dict[str, list[str]] = {
+    "reply": ["crm_get_pending_reply", "crm_get_owner_voice", "crm_get_contact_memory", "crm_fill_reply_draft"],
+    "inbox": ["crm_list_untriaged_emails", "crm_triage_email", "crm_get_email", "crm_get_contact_memory",
+              "crm_get_owner_voice", "crm_save_email_draft"],
+    "memory": ["crm_list_contacts_to_consolidate", "crm_get_contact_memory", "crm_save_dossier", "crm_add_fact"],
+    "social": ["crm_list_unprocessed_posts", "crm_get_contact_memory", "crm_add_fact", "crm_add_life_event",
+               "crm_mark_posts_processed"],
+    "coach": ["crm_get_pending_coach_question", "crm_set_coach_question", "crm_get_checkin_to_review",
+              "crm_record_checkin_review", "crm_get_week_block", "crm_send_owner_message", "crm_list_goals"],
+}
+
+
+#: Інструменти лише для фонових профілів: у розмові з людиною вони зайві
+#: (там питання ставить не система, а власник), тож у tools/list без профілю
+#: їх немає — інтерактивний Claude бачить компактний набір.
+BACKGROUND_ONLY: frozenset[str] = frozenset(
+    name for names in PROFILES.values() for name in names
+) - {
+    "crm_get_owner_voice", "crm_get_contact_memory", "crm_get_email", "crm_save_email_draft",
+    "crm_add_fact", "crm_list_goals",
+}
+
+
+def tools_for(profile: str | None) -> list[dict]:
+    names = PROFILES.get((profile or "").strip().lower())
+    if not names:
+        return [t for t in TOOLS if t["name"] not in BACKGROUND_ONLY]
+    allowed = set(names)
+    return [t for t in TOOLS if t["name"] in allowed]
 
 
 def call_tool(db: Session, name: str, arguments: dict | None) -> tuple[str, bool]:

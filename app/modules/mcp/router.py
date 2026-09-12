@@ -92,7 +92,7 @@ def _unauthorized() -> JSONResponse:
     return JSONResponse(body, status_code=401, headers=CORS_HEADERS)
 
 
-def _handle(db: Session, message: dict, client_version_header: str | None) -> dict | None:
+def _handle(db: Session, message: dict, client_version_header: str | None, profile: str | None = None) -> dict | None:
     """Одне JSON-RPC повідомлення → відповідь або None для нотифікації."""
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
         return protocol.rpc_error(message.get("id") if isinstance(message, dict) else None, -32600, "Invalid Request")
@@ -113,7 +113,7 @@ def _handle(db: Session, message: dict, client_version_header: str | None) -> di
     if method == "ping":
         return protocol.rpc_result(req_id, {})
     if method == "tools/list":
-        return protocol.rpc_result(req_id, {"tools": tools.TOOLS})
+        return protocol.rpc_result(req_id, {"tools": tools.tools_for(profile)})
     if method == "tools/call":
         name = params.get("name") or ""
         text, failed = tools.call_tool(db, name, params.get("arguments"))
@@ -136,8 +136,9 @@ async def _post(request: Request, path_token: str | None) -> Response:
 
         service.touch_seen(db)
         version_header = request.headers.get("mcp-protocol-version")
+        profile = request.query_params.get("profile")
         messages = payload if isinstance(payload, list) else [payload]
-        replies = [r for r in (_handle(db, m, version_header) for m in messages) if r is not None]
+        replies = [r for r in (_handle(db, m, version_header, profile) for m in messages) if r is not None]
 
     if not replies:
         # Лише нотифікації — 202 з порожнім тілом, як вимагає протокол.

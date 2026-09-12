@@ -72,7 +72,16 @@ nginx.
 Токен лежить у `integration_tokens` під `provider="mcp"` — та сама таблиця,
 що й Google, без нової схеми.
 
-## Інструменти (22)
+## Профілі для фонового воркера
+
+`/mcp/<token>?profile=reply|inbox|memory|social|coach` обмежує `tools/list`
+до 4–8 інструментів однієї фонової задачі (менше схем у контексті — менше
+квоти). Без профілю — інтерактивний набір із 22 інструментів нижче; 15
+фонових (`crm_get_pending_reply`, `crm_fill_reply_draft`, `crm_triage_email`,
+`crm_save_dossier`, `crm_set_coach_question`, …) у ньому не показуються, але
+викликаються. Деталі — [BACKGROUND_AI.md](BACKGROUND_AI.md).
+
+## Інструменти (22 інтерактивних)
 
 | Читання | Дії |
 |---|---|

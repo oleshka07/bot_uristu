@@ -11,6 +11,7 @@ line whenever a new domain gains a ``models.py``.
 
 from __future__ import annotations
 
+from app.modules.aijobs import models as aijobs_models  # noqa: F401
 from app.modules.automation import models as automation_models  # noqa: F401
 from app.modules.coach import models as coach_models  # noqa: F401
 from app.modules.contacts import models as contacts_models  # noqa: F401
@@ -45,4 +46,5 @@ __all__ = [
     "resources_models",
     "coach_models",
     "inbox_models",
+    "aijobs_models",
 ]

@@ -262,21 +262,34 @@ def handle_incoming(
     if contact.auto_reply_paused:
         return None, contact, is_new, "paused"
 
-    draft_text = ai.draft_reply(contact, text) or ""
-    if draft_text.strip() == "[SKIP]":
-        # The model judged this a conversation-ender in context.
-        return None, contact, is_new, "skip"
-
     draft = TelegramDraft(
         contact_id=contact.id,
         chat_id=chat_id,
         business_connection_id=business_connection_id,
         kind=DraftKind.reply,
         incoming_text=text,
-        draft_text=draft_text,
+        draft_text="",
         status=DraftStatus.pending,
     )
     db.add(draft)
+    db.commit()
+    db.refresh(draft)
+
+    # Хто пише чернетку — модель через ключ (зараз) чи Claude Code через MCP
+    # (за хвилину, у фоні). У другому випадку картка йде без тексту зі
+    # статусом "drafting", а текст допише crm_fill_reply_draft.
+    from app.modules.aijobs import brain
+
+    draft_text = brain.draft_reply(db, draft)
+    if draft_text is None and brain.deferred():
+        return draft, contact, is_new, "drafting"
+    draft_text = draft_text or ""
+    if draft_text.strip() == "[SKIP]":
+        # The model judged this a conversation-ender in context.
+        db.delete(draft)
+        db.commit()
+        return None, contact, is_new, "skip"
+    draft.draft_text = draft_text
     db.commit()
     db.refresh(draft)
     return draft, contact, is_new, "drafted"
@@ -326,6 +339,43 @@ def set_admin_message(db: Session, draft: TelegramDraft, message_id: int) -> Non
 def update_draft_text(db: Session, draft: TelegramDraft, text: str) -> None:
     draft.draft_text = text
     db.commit()
+
+
+def fill_reply_draft(db: Session, draft: TelegramDraft, text: str) -> str:
+    """Дописує текст у чернетку, складену у фоні, і оновлює картку в чаті.
+
+    ``[SKIP]`` — чернетку пропускаємо (вхідне не потребує відповіді), картку
+    прибираємо. Повертає "filled" | "skipped" | "stale" (чернетка вже не pending).
+    """
+    from app.modules.automation import telegram
+
+    if draft.status != DraftStatus.pending:
+        return "stale"
+    text = (text or "").strip()
+    if text == "[SKIP]":
+        draft.status = DraftStatus.skipped
+        db.commit()
+        if draft.admin_message_id and settings.telegram_chat_id:
+            telegram._call(
+                "deleteMessage", chat_id=settings.telegram_chat_id, message_id=draft.admin_message_id
+            )
+        return "skipped"
+    draft.draft_text = text
+    db.commit()
+    db.refresh(draft)
+    if draft.admin_message_id and settings.telegram_chat_id:
+        from .handlers import _draft_keyboard, _preview_text
+
+        contact = db.get(Contact, draft.contact_id)
+        telegram._call(
+            "editMessageText",
+            chat_id=settings.telegram_chat_id,
+            message_id=draft.admin_message_id,
+            text=_preview_text(contact, draft, False),
+            parse_mode="HTML",
+            reply_markup=_draft_keyboard(draft.id, bool(text)),
+        )
+    return "filled"
 
 
 def mark(db: Session, draft: TelegramDraft, status: DraftStatus) -> None:

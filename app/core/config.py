@@ -64,6 +64,25 @@ class Settings(BaseSettings):
     # Публічна адреса сайту (для адреси MCP у кабінеті). Порожньо — беремо
     # з заголовків запиту (x-forwarded-proto / host за nginx).
     public_base_url: str | None = None
+    # Фоновий AI: хто думає за фонові джоби.
+    #   api         — модель через API-ключ (AI_PROVIDER: anthropic/openai/gemini)
+    #   claude_code — Claude Code на сервері за підпискою (воркер, черга ai_jobs)
+    #   off         — фон без AI (детерміновані частини працюють, чернеток немає)
+    background_ai: str = "api"
+    # Куди відкочуватись, якщо claude_code впав кілька разів: api | none.
+    background_ai_fallback: str = "api"
+    claude_code_bin: str = "claude"
+    claude_code_model: str = "sonnet"
+    claude_code_max_turns: int = 8
+    claude_code_timeout: int = 240
+    # Адреса нашого ж MCP зсередини docker-мережі — без nginx і без TLS.
+    mcp_internal_url: str = "http://web:8000"
+    aijobs_max_attempts: int = 3
+    aijobs_max_per_hour: int = 40
+    # Тихі години у форматі "23-7" (локальний час сервера); порожньо = немає.
+    aijobs_quiet_hours: str | None = None
+    # Вхідні, що прийшли протягом цих секунд, — одна задача, не десять.
+    aijobs_debounce_seconds: int = 45
     google_tasklist_title: str = "Networking AI"
     sync_window_days: int = 120
 

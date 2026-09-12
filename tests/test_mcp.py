@@ -46,7 +46,8 @@ def test_envelopes_and_tool_results():
 def test_every_tool_schema_is_sound():
     assert protocol.validate_tool_specs(tools.TOOLS) == []
     assert set(tools.HANDLERS) == {t["name"] for t in tools.TOOLS}
-    assert 10 <= len(tools.TOOLS) <= 25
+    assert 10 <= len(tools.tools_for(None)) <= 25  # інтерактивний набір
+    assert len(tools.TOOLS) > len(tools.tools_for(None))  # фонові — лише за профілем
     for spec in tools.TOOLS:
         assert spec["name"].startswith("crm_")
         assert set(spec["annotations"]) == {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}
@@ -100,7 +101,9 @@ def test_handshake_ping_and_tool_list(mcp):
     assert "crm_get_owner_voice" in r["result"]["instructions"]
     assert mcp["rpc"]("ping").json()["result"] == {}
     listed = mcp["rpc"]("tools/list").json()["result"]["tools"]
-    assert {t["name"] for t in listed} == set(tools.HANDLERS)
+    assert {t["name"] for t in listed} == {t["name"] for t in tools.tools_for(None)}
+    assert "crm_get_owner_voice" in {t["name"] for t in listed}
+    assert "crm_fill_reply_draft" not in {t["name"] for t in listed}  # фоновий — лише за профілем
 
 
 def test_notification_gets_202_with_empty_body(mcp):

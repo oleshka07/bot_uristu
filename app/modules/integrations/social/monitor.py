@@ -83,8 +83,43 @@ def store_new_posts(db: Session, contact: Contact, fetched: list[providers.PostD
     return new
 
 
+def unprocessed_posts(db: Session, contact: Contact) -> list[SocialPost]:
+    """Дописи, які ще ніхто не читав — їх забирає Claude через MCP або відкат на API."""
+    return list(
+        db.scalars(
+            select(SocialPost)
+            .where(SocialPost.contact_id == contact.id, SocialPost.processed_at.is_(None))
+            .order_by(SocialPost.posted_at.desc().nullslast(), SocialPost.id.desc())
+        )
+    )
+
+
+def mark_processed(db: Session, posts: list[SocialPost]) -> int:
+    now = datetime.now(timezone.utc)
+    for p in posts:
+        p.processed_at = now
+    db.commit()
+    return len(posts)
+
+
 def process_posts(db: Session, contact: Contact, new_posts: list[SocialPost]) -> dict:
-    """Нові дописи -> факти з провенансом + приводи для контакту."""
+    """Нові дописи -> факти + приводи. Хто читає — вирішує brain (API або Claude Code).
+
+    Відкладено (Claude прочитає пізніше) — дописи лишаються непрочитаними,
+    повертаємо нулі з позначкою ``deferred``.
+    """
+    from app.modules.aijobs import brain
+
+    if not new_posts:
+        return {"facts": 0, "hooks": 0}
+    result = brain.social_digest(db, contact, new_posts)
+    if result is None:
+        return {"facts": 0, "hooks": 0, "deferred": True}
+    return result
+
+
+def process_posts_via_api(db: Session, contact: Contact, new_posts: list[SocialPost]) -> dict:
+    """Нові дописи -> факти з провенансом + приводи для контакту (модель через ключ)."""
     from app.modules.insights import ai
     from app.modules.insights import service as insights
     from app.modules.insights.models import FactType
@@ -142,10 +177,7 @@ def process_posts(db: Session, contact: Contact, new_posts: list[SocialPost]) ->
         known_titles.add(title.casefold())
         hooks += 1
 
-    now = datetime.now(timezone.utc)
-    for p in new_posts:
-        p.processed_at = now
-    db.commit()
+    mark_processed(db, new_posts)
     return {"facts": facts, "hooks": hooks}
 
 

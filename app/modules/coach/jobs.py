@@ -38,6 +38,8 @@ def send_question(*, force: bool = False) -> bool:
         if opened is None:
             return False
         _, question = opened
+    if not question:
+        return False  # питання допише і надішле Claude Code у фоні
     return telegram.send_message(_esc(question))
 
 
@@ -56,7 +58,10 @@ def send_nudge() -> bool:
         goal = db.get(Goal, checkin.goal_id)
         if goal is None:
             return False
-        text = ai.coach_nudge(goal.title) or (
+        from app.modules.aijobs import brain
+
+        # На нагадування окремий запуск Claude не витрачаємо — є готовий текст.
+        text = (ai.coach_nudge(goal.title) if brain.mode() == "api" else None) or (
             f"Питання про «{goal.title}» висить без відповіді. "
             "Ігнор — теж відповідь, і вона зрозуміла."
         )
@@ -89,10 +94,8 @@ def send_task_reminders() -> bool:
     return telegram.send_message(text)
 
 
-def weekly_text(db) -> str:
-    """Тижневий зріз: цифри, зміни статусів, записи — і вердикт."""
-    from app.modules.insights import ai
-
+def week_block(db) -> tuple[str, bool]:
+    """Цифри тижня простим текстом (без HTML) і ознака «тиждень без руху»."""
     data = service.board(db)
     changes = service.week_changes(db)
     entries = service.week_entries(db)
@@ -102,9 +105,9 @@ def weekly_text(db) -> str:
         head = f"{label}: {b['total']} цілей, done {b['done']} ({b['done_pct']}%)"
         return head + (f"\n  {', '.join(parts)}" if parts else "")
 
-    lines = [f"<b>Тиждень до {datetime.now():%d.%m.%Y}</b>"]
+    lines = [f"Тиждень до {datetime.now():%d.%m.%Y}"]
     if data["theme"]:
-        lines.append(_esc(data["theme"]))
+        lines.append(data["theme"])
     lines += ["", line("Pers", data["pers"]), line("Work", data["work"]),
               line("Разом", data["all"]), ""]
 
@@ -112,7 +115,7 @@ def weekly_text(db) -> str:
         lines.append("Зміни статусів за тиждень:")
         for c in changes:
             title = c.goal.title if c.goal else f"ціль #{c.goal_id}"
-            lines.append(f"- {_esc(title)}: {c.status_before} -> {c.status_after}")
+            lines.append(f"- {title}: {c.status_before} -> {c.status_after}")
     else:
         lines.append("Статуси за тиждень не змінилися.")
 
@@ -124,7 +127,7 @@ def weekly_text(db) -> str:
             if title in seen:
                 continue
             seen.add(title)
-            lines.append(f"- {_esc(title)}")
+            lines.append(f"- {title}")
     else:
         lines += ["", "Записів по жодній цілі за тиждень немає."]
 
@@ -134,27 +137,50 @@ def weekly_text(db) -> str:
     if gates:
         lines += ["", "Ворота, що висять понад добу:"]
         for g in gates[:5]:
-            lines.append(f"- {_esc(gates_service.gate_line(db, g))}")
+            lines.append(f"- {gates_service.gate_line(db, g)}")
 
     stalled = not changes and not entries
-    verdict = ai.coach_week_verdict("\n".join(lines), stalled) or (
+    return "\n".join(lines), stalled
+
+
+def default_verdict(stalled: bool) -> str:
+    return (
         "Тиждень злитий: жодного руху по жодній цілі. У понеділок обери одну "
         "ціль і зроби по ній перший крок."
         if stalled
         else "У понеділок візьми одну ціль і зрушь її."
     )
-    lines += ["", _esc(verdict)]
-    return "\n".join(lines)
+
+
+def render_weekly(block: str, verdict: str) -> str:
+    """HTML для Telegram: перший рядок жирним, решта — екранований текст."""
+    lines = _esc(block).split("\n")
+    if lines:
+        lines[0] = f"<b>{lines[0]}</b>"
+    return "\n".join(lines) + ("\n\n" + _esc(verdict) if verdict else "")
+
+
+def weekly_text(db) -> str:
+    """Тижневий зріз з вердиктом — одразу, моделлю через ключ (для /week)."""
+    from app.modules.insights import ai
+
+    block, stalled = week_block(db)
+    verdict = ai.coach_week_verdict(block, stalled) or default_verdict(stalled)
+    return render_weekly(block, verdict)
 
 
 def send_weekly() -> bool:
     if not _configured():
         return False
+    from app.modules.aijobs import brain
     from app.modules.automation import telegram
 
     with SessionLocal() as db:
-        text = weekly_text(db)
-    return telegram.send_message(text)
+        block, stalled = week_block(db)
+        verdict = brain.weekly_verdict(db, block, stalled)
+    if verdict is None:
+        return False  # підсумок складе і надішле Claude Code у фоні
+    return telegram.send_message(render_weekly(block, verdict or default_verdict(stalled)))
 
 
 def run_coach_tick() -> None:

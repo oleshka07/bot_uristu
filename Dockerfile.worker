@@ -1,0 +1,23 @@
+# Воркер фонового AI: той самий застосунок + Claude Code CLI.
+# Запускає `claude -p` на підписці власника, коли в черзі ai_jobs є робота.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/home/worker
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates git \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/worker && chmod 777 /home/worker
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+
+CMD ["python", "-m", "app.run_worker"]

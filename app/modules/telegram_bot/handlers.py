@@ -296,7 +296,7 @@ def _send_next_outreach_card(client, db, admin: int) -> bool:
     return True
 
 
-def _preview_text(contact, draft, is_new: bool) -> str:
+def _preview_text(contact, draft, is_new: bool, drafting: bool = False) -> str:
     head = f"👤 <b>{_contact_link(contact)}</b>"
     if contact.telegram:
         head += f" ({_esc(contact.telegram)})"
@@ -311,6 +311,8 @@ def _preview_text(contact, draft, is_new: bool) -> str:
     if draft.draft_text.strip():
         body += f"\n\n✍️ <b>Чернетка:</b>\n{_esc(draft.draft_text)}"
         body += "\n\n<i>Reply текстом/голосом — скоригую чернетку.</i>"
+    elif drafting:
+        body += "\n\n<i>⏳ Claude пише чернетку — картка оновиться сама.</i>"
     else:
         body += "\n\n<i>Чернетки немає (AI недоступний) — відповідай вручну.</i>"
     return head + body
@@ -419,7 +421,7 @@ def handle_business_message(client, msg: dict) -> None:
         if admin:
             sent = client.send_message(
                 admin,
-                _preview_text(contact, draft, is_new),
+                _preview_text(contact, draft, is_new, drafting=(status == "drafting")),
                 reply_markup=_draft_keyboard(draft.id, bool(draft.draft_text.strip())),
             )
             if sent:
