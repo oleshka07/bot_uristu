@@ -1211,6 +1211,9 @@ function renderTelegramPanel(st) {
   }
   body.innerHTML = `
     <p class="muted">Digest delivery is ${st.chat_id_set ? "enabled" : "missing a chat id"}. Commands: /today, /due, /find.</p>
+    <p class="muted">Голосові: ${st.voice_provider
+      ? `розшифровує <b>${esc(st.voice_provider)}</b>${st.voice_providers.length > 1 ? " (запас: " + st.voice_providers.slice(1).map(esc).join(", ") + ")" : ""}`
+      : "немає провайдера — додай <code>DEEPGRAM_API_KEY</code> у .env"}</p>
     <button class="btn primary" id="tg-test">Send test message</button>
     <div id="tg-result" class="mt"></div>`;
   $("#tg-test").addEventListener("click", async (e) => {

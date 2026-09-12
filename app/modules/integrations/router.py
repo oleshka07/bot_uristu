@@ -95,9 +95,14 @@ def chater_dedupe(db: Session = Depends(get_db)):
 
 @router.get("/telegram/status")
 def telegram_status():
+    from app.modules.telegram_bot import transcribe
+
     return {
         "configured": settings.telegram_configured,
         "chat_id_set": bool(settings.telegram_chat_id),
+        # Розшифровка голосових: хто перший і хто в запасі.
+        "voice_provider": transcribe.active_provider(),
+        "voice_providers": transcribe.available_providers(),
     }
 
 

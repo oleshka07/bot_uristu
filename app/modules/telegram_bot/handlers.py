@@ -712,7 +712,7 @@ def handle_admin_message(client, msg: dict) -> None:
             if not instruction:
                 client.send_message(
                     admin,
-                    "Не зміг розшифрувати голосове (потрібен OPENAI_API_KEY "
+                    "Не зміг розшифрувати голосове (потрібен DEEPGRAM_API_KEY, OPENAI_API_KEY "
                     "або GEMINI_API_KEY).",
                 )
                 return
@@ -776,7 +776,7 @@ def handle_admin_message(client, msg: dict) -> None:
         if not transcript:
             client.send_message(
                 admin,
-                "Не зміг розшифрувати голосове (потрібен OPENAI_API_KEY або "
+                "Не зміг розшифрувати голосове (потрібен DEEPGRAM_API_KEY, OPENAI_API_KEY або "
                 "GEMINI_API_KEY).",
             )
             return

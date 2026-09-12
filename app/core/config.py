@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
     gemini_api_key: str | None = None
+    # Розшифровка голосових. Deepgram — окремий баланс власника; ключ лише з env.
+    deepgram_api_key: str | None = None
+    deepgram_model: str = "nova-2"
+    # Порожньо = перший, у кого є ключ: deepgram -> openai -> gemini.
+    transcribe_provider: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
     # Embeddings for semantic search over the network. Uses OpenAI (or Voyage)
