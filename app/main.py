@@ -29,6 +29,7 @@ from .modules.integrations.social.monitor_router import router as social_monitor
 from .modules.integrations.social.router import router as imports_router
 from .modules.ideas.router import router as ideas_router
 from .modules.inbox.router import router as inbox_router
+from .modules.mcp.router import MCPCorsMiddleware, admin_router as mcp_admin_router, router as mcp_router
 from .modules.projects.router import router as projects_router
 from .modules.resources.router import router as resources_router
 from .modules.tasks.router import router as tasks_router
@@ -68,6 +69,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Додається ПІСЛЯ загального CORS: у Starlette останній доданий — зовнішній,
+# тож preflight на /mcp перехоплюємо ми (`*`), а не список дозволених origin-ів.
+app.add_middleware(MCPCorsMiddleware)
+
 
 @app.get("/api/health", tags=["meta"])
 def health() -> dict:
@@ -95,6 +100,8 @@ app.include_router(coach_router)
 app.include_router(gates_router)
 app.include_router(inbox_router)
 app.include_router(social_monitor_router)
+app.include_router(mcp_router)
+app.include_router(mcp_admin_router)
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     consolidate_every: int = 5
     consolidate_max_per_run: int = 15
     consolidate_stale_days: int = 30
+    # Публічна адреса сайту (для адреси MCP у кабінеті). Порожньо — беремо
+    # з заголовків запиту (x-forwarded-proto / host за nginx).
+    public_base_url: str | None = None
     google_tasklist_title: str = "Networking AI"
     sync_window_days: int = 120
 

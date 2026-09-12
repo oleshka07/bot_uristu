@@ -1051,12 +1051,13 @@ async function linkGoalToContact(contactId) {
 async function renderIntegrations() {
   const main = $("#main");
   main.innerHTML = `<div class="view-head"><h2>Integrations</h2></div><div class="empty"><span class="spinner"></span></div>`;
-  let g, ch, tg;
+  let g, ch, tg, mcp;
   try {
-    [g, ch, tg] = await Promise.all([
+    [g, ch, tg, mcp] = await Promise.all([
       api("/integrations/google/status"),
       api("/integrations/chater/status"),
       api("/integrations/telegram/status"),
+      api("/integrations/mcp/status"),
     ]);
   } catch (e) { return showError(e); }
 
@@ -1065,11 +1066,57 @@ async function renderIntegrations() {
       <div class="card"><h3 class="section-title">Google (Gmail + Calendar)</h3><div id="g-body"></div></div>
       <div class="card"><h3 class="section-title">Chater (Telegram bot database)</h3><div id="ch-body"></div></div>
       <div class="card"><h3 class="section-title">Telegram digest & bot</h3><div id="tg-body"></div></div>
+      <div class="card"><h3 class="section-title">Claude (MCP)</h3><div id="mcp-body"></div></div>
     </div>`;
 
   renderGooglePanel(g);
   renderChaterPanel(ch);
   renderTelegramPanel(tg);
+  renderMcpPanel(mcp);
+}
+
+function renderMcpPanel(st) {
+  const body = $("#mcp-body");
+  const seen = st.last_seen ? new Date(st.last_seen).toLocaleString("uk-UA") : "ще не звертався";
+  const howTo = `
+    <details class="mt"><summary class="muted">Як підключити</summary>
+      <ol class="muted" style="padding-left:18px">
+        <li>claude.ai → Settings → Connectors → <b>Add custom connector</b> → встав адресу вище. Поля під токен там немає — він уже в адресі.</li>
+        <li>Claude Code: <code>claude mcp add --transport http networking &lt;адреса&gt;</code></li>
+        <li>Далі в чаті: «кому мені пора написати?», «напиши Марії про зустріч» — Claude сам прочитає памʼять і збереже чернетку.</li>
+      </ol>
+      <p class="muted">Адреса = пароль. Не публікуй її. Витекла — натисни «Перевипустити», стара помре одразу.</p>
+    </details>`;
+  if (!st.configured) {
+    body.innerHTML = `<p class="muted">${st.tools} інструментів для Claude: памʼять про людей, чернетки, пошта, задачі, цілі.
+      Генерація — на боці підписки Claude, наші AI-кредити не витрачаються.</p>
+      <button class="btn primary" id="mcp-issue">Створити адресу</button>${howTo}`;
+  } else {
+    body.innerHTML = `
+      <p class="muted">${st.tools} інструментів · Claude звертався: ${esc(seen)}</p>
+      <div class="flex" style="gap:6px;align-items:center">
+        <input id="mcp-url" readonly value="${esc(st.url)}" style="flex:1;font-family:monospace;font-size:12px" />
+        <button class="btn small" id="mcp-copy">Копіювати</button>
+      </div>
+      <div class="flex mt" style="gap:6px">
+        <button class="btn small" id="mcp-issue">Перевипустити</button>
+        <button class="btn small danger" id="mcp-revoke">Відключити</button>
+      </div>${howTo}`;
+    $("#mcp-copy").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(st.url); toast("Скопійовано"); }
+      catch (_) { $("#mcp-url").select(); toast("Виділено — скопіюй вручну"); }
+    });
+    $("#mcp-revoke").addEventListener("click", async () => {
+      if (!confirm("Відключити Claude? Поточна адреса перестане працювати.")) return;
+      try { renderMcpPanel(await api("/integrations/mcp/revoke", { method: "POST" })); }
+      catch (e) { toast(e.message, true); }
+    });
+  }
+  $("#mcp-issue").addEventListener("click", async () => {
+    if (st.configured && !confirm("Перевипустити адресу? Стара перестане працювати одразу.")) return;
+    try { renderMcpPanel(await api("/integrations/mcp/issue", { method: "POST" })); toast("Адресу створено"); }
+    catch (e) { toast(e.message, true); }
+  });
 }
 
 function renderGooglePanel(st) {

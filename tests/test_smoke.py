@@ -125,6 +125,9 @@ EXPECTED_ROUTES = {
     ("POST", "/api/social/monitor"),
     ("POST", "/api/social/contacts/{contact_id}/check"),
     ("GET", "/api/social/contacts/{contact_id}/posts"),
+    ("GET", "/api/integrations/mcp/status"),
+    ("POST", "/api/integrations/mcp/issue"),
+    ("POST", "/api/integrations/mcp/revoke"),
     ("PATCH", "/api/inbox/{thread_pk}"),
 }
 

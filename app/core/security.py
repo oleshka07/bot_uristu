@@ -35,7 +35,10 @@ def _eq(a: str | None, b: str | None) -> bool:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if not settings.auth_enabled or request.url.path in _OPEN_PATHS:
+        path = request.url.path
+        # /mcp має власну автентифікацію токеном у шляху: клієнт — сервер
+        # Claude, а не браузер, і в формі конектора PIN чи Basic ввести ніде.
+        if not settings.auth_enabled or path in _OPEN_PATHS or path.startswith("/mcp"):
             return await call_next(request)
 
         # Service-to-service: X-API-Key header.
